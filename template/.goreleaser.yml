@@ -1,0 +1,129 @@
+# Relux release standard: GoReleaser config template.
+#
+# Copy to the caller repository root as .goreleaser.yml, replace every
+# __PLACEHOLDER__, and keep everything else. release-standard-lint checks the
+# result in the release admission job. RELEASE_STANDARD_SCRIPTS is set by the
+# shared go-release.yml; for a local snapshot point it at a checkout of the
+# standard's scripts/ and set RELEASE_REQUIRE_SIGNING=false.
+version: 2
+
+project_name: __BINARY__
+
+# Signing presence gate: no field and require_signing=false builds unsigned,
+# all five fields sign and notarize, anything else fails before any build.
+before:
+  hooks:
+    - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'
+
+builds:
+  - id: __BINARY__
+    main: __MAIN_PACKAGE__
+    binary: __BINARY__
+    # GOTOOLCHAIN from the go line of go.mod, also outside Actions.
+    tool: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/go-toolchain.sh'
+    env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly]
+    goos: [darwin, linux]
+    goarch: [arm64, amd64]
+    flags: [-trimpath, -buildvcs=false]
+    ldflags:
+      - -s -w -buildid= -X __VERSION_SYMBOL__={{ .Version }}
+
+archives:
+  - id: default
+    ids: [__BINARY__]
+    formats: [tar.gz]
+    name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [LICENSE, NOTICE, README.md]
+
+# nFPM wraps the Linux builds into .deb, .rpm and .pkg.tar.zst (archlinux).
+nfpms:
+  - id: packages
+    ids: [__BINARY__]
+    package_name: __BINARY__
+    vendor: Relux Works, LLC
+    homepage: __HOMEPAGE__
+    maintainer: __MAINTAINER__
+    description: __DESCRIPTION__
+    license: __LICENSE__
+    formats: [deb, rpm, archlinux]
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/licenses/__BINARY__/LICENSE
+      - src: NOTICE
+        dst: /usr/share/doc/__BINARY__/NOTICE
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+# Darwin binaries only, after building. All fields are required when enabled,
+# so a missing ASC field cannot skip notarization; errors abort the release.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [__BINARY__]
+      sign:
+        certificate: '{{ .Env.MACOS_SIGN_P12 }}'
+        password: '{{ .Env.MACOS_SIGN_P12_PASSWORD }}'
+      notarize:
+        issuer_id: '{{ .Env.ASC_ISSUER_ID }}'
+        key_id: '{{ .Env.ASC_KEY_ID }}'
+        key: '{{ .Env.ASC_KEY_P8 }}'
+        wait: true
+        timeout: 20m
+
+# Keyless cosign over checksums.txt; verifying it covers every listed asset.
+signs:
+  - cmd: cosign
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-certificate=${certificate}'
+      - '--output-signature=${signature}'
+      - '${artifact}'
+      - --yes
+    artifacts: checksum
+    output: true
+
+# `auto` skips the tap upload for prereleases, so an rc never moves the cask.
+homebrew_casks:
+  - name: __BINARY__
+    ids: [default]
+    skip_upload: auto
+    repository:
+      owner: relux-works
+      name: homebrew-tap
+      token: '{{ .Env.TAP_GITHUB_TOKEN }}'
+    directory: Casks
+    homepage: __HOMEPAGE__
+    description: __DESCRIPTION__
+    license: __LICENSE__
+
+release:
+  github:
+    owner: relux-works
+    name: __REPOSITORY_NAME__
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Verify what you downloaded
+
+    Put the assets and checksums.txt{,.sig,.pem} in one directory, then run
+    scripts/verify-release.sh from the Relux release standard, or by hand:
+
+    ```bash
+    cosign verify-blob \
+      --certificate checksums.txt.pem --signature checksums.txt.sig \
+      --certificate-identity-regexp '^https://github\.com/relux-works/release/\.github/workflows/go-release\.yml@' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      --certificate-github-workflow-repository '{{ .Env.GITHUB_REPOSITORY }}' \
+      --certificate-github-workflow-ref 'refs/tags/{{ .Tag }}' \
+      checksums.txt
+    sha256sum --ignore-missing -c checksums.txt
+    ```
+
+changelog:
+  use: github

@@ -1,0 +1,22 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  release:
+    # A called workflow cannot raise permissions: grant them here.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    uses: relux-works/release/.github/workflows/go-release.yml@__STANDARD_SHA__ # __STANDARD_VERSION__
+    with:
+      main_package: __MAIN_PACKAGE__
+      binary: __BINARY__
+      version_source_file: __VERSION_SOURCE_FILE__
+      version_source_regex: '__VERSION_SOURCE_REGEX__'
+    secrets: inherit
