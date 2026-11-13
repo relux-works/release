@@ -1,4 +1,4 @@
-module github.com/relux-works/release
+module relux.works/release-standard
 
 go 1.22
 
