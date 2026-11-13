@@ -273,10 +273,7 @@ jobs:
         with:
           cosign-release: v2.6.1
 
-      # PIN-REQUIRED: curator uses anchore/sbom-action/download-syft@v0, which
-      # is not pinned. Replace this ref with a full commit SHA and a version
-      # comment (see NOTES.md). Until then the job fails here, closed.
-      - uses: anchore/sbom-action/download-syft@PIN-REQUIRED
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       # The before hook (signing-gate.sh) refuses partial or required-but-absent
       # signing configuration before any build. Only this step gets secrets.
@@ -298,11 +295,8 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
 
-      # PIN-REQUIRED: curator uses actions/attest-build-provenance@v2, which is
-      # not pinned. Replace this ref with a full commit SHA and a version
-      # comment (see NOTES.md).
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@PIN-REQUIRED
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             source/dist/*.tar.gz

@@ -12,9 +12,8 @@ The repository name is not decided (`relux-works/release` or
 ## Status
 
 P0 scratch, not published. Nothing here has run in GitHub Actions yet, and the
-tests have not been executed (only static checks; see NOTES.md). Two action
-pins are still `PIN-REQUIRED`, so `go-release.yml` fails closed until they
-are filled in. `linux-repos.yml` is disabled and unimplemented by design.
+tests have not been executed (only static checks; see NOTES.md).
+`linux-repos.yml` is disabled and unimplemented by design.
 
 ## Parts
 

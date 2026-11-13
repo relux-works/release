@@ -115,18 +115,18 @@ runs tests executes `make test`.
 
 ## Open items
 
-1. **PIN-REQUIRED** `anchore/sbom-action/download-syft` in `go-release.yml`
-   publish job: curator uses `@v0`, unpinned. Needs a full SHA and a version
-   comment. The workflow fails at that step until then.
-2. **PIN-REQUIRED** `actions/attest-build-provenance` in `go-release.yml`:
-   curator uses `@v2`, unpinned. Same treatment.
+1. Pinned by the parent from the GitHub API (tag peeled to its commit):
+   `anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c`
+   (v0.24.3, released 2026-10-02).
+2. `actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8`
+   (v4.2.2, released 2026-08-06).
 3. Repository name (`relux-works/release` vs `.github`), see the table above.
 4. `job.workflow_sha` should be confirmed on the first real run (the guard
    fails closed if it is absent). Drop the actionlint ignore once actionlint
    knows the property.
-5. rc semantics: exact equality means the version source must be bumped to
-   `X.Y.Z-rc.N` for each candidate. Alternative: accept the base `X.Y.Z` for
-   an rc tag. Owner or reviewer decision.
+5. rc semantics, DECIDED (parent): exact equality. The version source must read
+   `X.Y.Z-rc.N` for an rc tag, so a binary never reports a version other than
+   the tag it was released from.
 6. curator has no version source file today (version only via ldflags); it
    needs one (or this input made optional) before adopting.
 7. GoReleaser `builds.tool` is assumed to accept templates
