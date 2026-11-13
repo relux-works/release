@@ -1,0 +1,7 @@
+# actionlint 1.7.12 predates the job.workflow_* context properties GitHub added
+# in August 2026 (job.workflow_sha is the called workflow's own commit). Ignore
+# only that one unknown-property message; see NOTES.md.
+paths:
+  .github/workflows/*.yml:
+    ignore:
+      - 'property "workflow_sha" is not defined in object type \{check_run_id'

@@ -1,0 +1,145 @@
+name: Relux Linux repositories
+
+# Reusable workflow that will publish a release's .deb packages into the APT
+# index repository and a `-bin` PKGBUILD into AUR.
+#
+# STATUS: DISABLED AND NOT IMPLEMENTED. This file fixes the contract only.
+# - A job runs only with `enable: true` AND the keys it needs present:
+#   APT needs APT_GPG_PRIVATE_KEY and APT_GPG_PASSPHRASE; AUR needs
+#   AUR_SSH_PRIVATE_KEY. Prereleases (-rc.N) are never published here.
+# - Every publishing step is a stub that fails with "NOT IMPLEMENTED". An
+#   enabled run therefore fails loudly; it never reports a fake success.
+# Turning it on is rollout phase P5 (see docs/OWNER-GUIDE.md and NOTES.md).
+
+on:
+  workflow_call:
+    inputs:
+      enable:
+        description: Explicit opt-in. Nothing runs unless this is true.
+        type: boolean
+        default: false
+      release_tag:
+        description: The published release tag, vX.Y.Z.
+        type: string
+        required: true
+      package_name:
+        description: nfpm package_name of the caller (the .deb name and AUR base name).
+        type: string
+        required: true
+      apt_repository:
+        description: GitHub Pages repository that hosts the APT index.
+        type: string
+        default: relux-works/apt
+      aur_package:
+        description: AUR package name; empty means <package_name>-bin.
+        type: string
+        default: ''
+      runner:
+        description: Runner label.
+        type: string
+        default: ubuntu-24.04
+    secrets:
+      APT_GPG_PRIVATE_KEY:
+        required: false
+      APT_GPG_PASSPHRASE:
+        required: false
+      APT_REPO_TOKEN:
+        description: Push token for apt_repository. Open item, see NOTES.md.
+        required: false
+      AUR_SSH_PRIVATE_KEY:
+        required: false
+
+permissions: {}
+
+jobs:
+  # Secrets cannot appear in a job-level `if`, so this job turns their
+  # presence (never their values) into outputs.
+  readiness:
+    name: Readiness
+    if: inputs.enable && !contains(inputs.release_tag, '-')
+    permissions: {}
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 5
+    outputs:
+      apt: ${{ steps.presence.outputs.apt }}
+      aur: ${{ steps.presence.outputs.aur }}
+    steps:
+      - name: Check key presence
+        id: presence
+        env:
+          HAS_APT_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY != '' }}
+          HAS_APT_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE != '' }}
+          HAS_AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
+        run: |
+          apt=false
+          aur=false
+          if [ "$HAS_APT_KEY" = true ] && [ "$HAS_APT_PASSPHRASE" = true ]; then apt=true; fi
+          if [ "$HAS_AUR_KEY" = true ]; then aur=true; fi
+          echo "apt=$apt" >>"$GITHUB_OUTPUT"
+          echo "aur=$aur" >>"$GITHUB_OUTPUT"
+          echo "linux-repos: apt=$apt aur=$aur (presence only)"
+
+  apt:
+    name: APT
+    needs: readiness
+    if: inputs.enable && needs.readiness.outputs.apt == 'true'
+    permissions:
+      contents: read
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      # Contract: download the release's *.deb, checksums.txt{,.sig,.pem} for
+      # inputs.release_tag into an empty directory, check out this standard at
+      # job.workflow_sha (as go-release.yml does) and run
+      # scripts/verify-release.sh against them. Nothing unverified is indexed.
+      - name: Download and verify the .deb assets (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml APT download and verification'
+          exit 1
+
+      # Contract: import APT_GPG_PRIVATE_KEY into an ephemeral GNUPGHOME under
+      # RUNNER_TEMP, unlock it with APT_GPG_PASSPHRASE through a loopback
+      # pinentry, and check that its fingerprint equals the published one.
+      - name: Import the APT signing key (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml APT key import'
+          exit 1
+
+      # Contract: check out inputs.apt_repository with APT_REPO_TOKEN, add the
+      # packages to pool/, regenerate Packages and Release for each
+      # architecture, sign InRelease and Release.gpg, commit and push.
+      - name: Update and sign the APT index (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml APT index update and signing'
+          exit 1
+
+  aur:
+    name: AUR
+    needs: readiness
+    if: inputs.enable && needs.readiness.outputs.aur == 'true'
+    permissions:
+      contents: read
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      # Contract: download the linux tar.gz archives and checksums for
+      # inputs.release_tag and run scripts/verify-release.sh first.
+      - name: Download and verify the Linux archives (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml AUR download and verification'
+          exit 1
+
+      # Contract: render PKGBUILD for <aur_package or package_name-bin> with
+      # x86_64/aarch64 sources and sha256sums from checksums.txt, generate
+      # .SRCINFO with makepkg --printsrcinfo in an Arch container.
+      - name: Render PKGBUILD and .SRCINFO (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml AUR PKGBUILD rendering'
+          exit 1
+
+      # Contract: load AUR_SSH_PRIVATE_KEY into an ephemeral ssh-agent, pin
+      # aur.archlinux.org's host key, commit and push to the AUR git remote.
+      - name: Push to AUR (NOT IMPLEMENTED)
+        run: |
+          echo '::error::NOT IMPLEMENTED: linux-repos.yml AUR push'
+          exit 1

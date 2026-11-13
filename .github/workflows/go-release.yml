@@ -1,0 +1,313 @@
+name: Relux Go release
+
+# Reusable release workflow of the Relux release standard for pure-Go, CGO=0
+# binaries. The caller's .goreleaser.yml drives the build; this workflow owns
+# the tool versions, the admission gates and the publishing steps.
+#
+# Permissions: a called workflow can only keep or reduce what the caller job
+# grants; it can never raise it. The caller job must grant
+#   contents: write, id-token: write, attestations: write
+# (see template/release.yml). Admission runs with contents: read only.
+#
+# Secrets: declared below, all optional. The caller passes `secrets: inherit`;
+# org-level secrets scoped to the caller repository then arrive here without
+# per-repo setup. Secrets reach the GoReleaser step only.
+
+on:
+  workflow_call:
+    inputs:
+      main_package:
+        description: Go main package, for example ./cmd/tool. Must equal builds[].main in .goreleaser.yml.
+        type: string
+        required: true
+      binary:
+        description: Binary name. Must equal builds[].binary in .goreleaser.yml.
+        type: string
+        required: true
+      version_source_file:
+        description: Repository path of the file that pins the version, read from the tag commit.
+        type: string
+        required: true
+      version_source_regex:
+        description: Extended regex matching exactly one whole line of version_source_file, with the version as capture group 1.
+        type: string
+        required: true
+      allowed_signers_path:
+        description: SSH allowed_signers file for release tags, read from the tag commit.
+        type: string
+        default: .github/release-signers
+      require_signed_tag:
+        description: Require an SSH-signed tag from a key in allowed_signers_path.
+        type: boolean
+        default: true
+      require_on_main:
+        description: Require the tag commit to be an ancestor of origin/main.
+        type: boolean
+        default: true
+      allow_prerelease:
+        description: Accept vX.Y.Z-rc.N tags.
+        type: boolean
+        default: false
+      require_signing:
+        description: Refuse to publish darwin binaries unless all five signing secrets are present.
+        type: boolean
+        default: true
+      go_version_file:
+        description: File passed to actions/setup-go as go-version-file.
+        type: string
+        default: go.mod
+      admission_command:
+        description: Optional extra admission command, run with bash in the caller checkout after the tag gate and lint.
+        type: string
+        default: ''
+      submodules:
+        description: Check out submodules of the caller repository.
+        type: boolean
+        default: false
+      runner:
+        description: Runner label for both jobs.
+        type: string
+        default: macos-15
+    secrets:
+      MACOS_SIGN_P12:
+        required: false
+      MACOS_SIGN_P12_PASSWORD:
+        required: false
+      ASC_ISSUER_ID:
+        required: false
+      ASC_KEY_ID:
+        required: false
+      ASC_KEY_P8:
+        required: false
+      TAP_GITHUB_TOKEN:
+        required: false
+
+permissions: {}
+
+# One release per caller ref at a time; never cancel a running release.
+concurrency:
+  group: relux-go-release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The shared standard repository (placeholder name; rename here only).
+  RELEASE_STANDARD_REPOSITORY: relux-works/release
+
+jobs:
+  admission:
+    name: Admission
+    permissions:
+      contents: read
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 20
+    steps:
+      # The caller and the standard are separate checkouts side by side, so the
+      # standard's files never make the caller's tree dirty for GoReleaser.
+      - name: Check out the caller at the tag commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
+          persist-credentials: false
+
+      # Shared scripts come from this repository at the exact commit of this
+      # workflow file, never from the caller. job.workflow_sha is the called
+      # workflow's commit (github.* belongs to the caller). An empty value
+      # would make checkout fall back to the default branch, so refuse it.
+      - name: Resolve this workflow's commit
+        id: standard
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          printf '%s\n' "$WORKFLOW_SHA" | grep -Eqx '[0-9a-f]{40}' || {
+            echo '::error::REFUSED[standard_sha_unavailable]: job.workflow_sha is not a full commit SHA'
+            exit 1
+          }
+          echo "sha=$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the release standard at this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.RELEASE_STANDARD_REPOSITORY }}
+          ref: ${{ steps.standard.outputs.sha }}
+          path: release-standard
+          persist-credentials: false
+
+      - name: Confirm the standard checkout commit
+        env:
+          WORKFLOW_SHA: ${{ steps.standard.outputs.sha }}
+        run: |
+          [ "$(git -C "$GITHUB_WORKSPACE/release-standard" rev-parse HEAD)" = "$WORKFLOW_SHA" ] || {
+            echo '::error::REFUSED[standard_sha_mismatch]: release-standard checkout is not job.workflow_sha'
+            exit 1
+          }
+
+      - name: Verify the release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
+          SIGNERS_PATH: ${{ inputs.allowed_signers_path }}
+          VERSION_FILE: ${{ inputs.version_source_file }}
+          VERSION_REGEX: ${{ inputs.version_source_regex }}
+          REQUIRE_SIGNED: ${{ inputs.require_signed_tag }}
+          REQUIRE_ON_MAIN: ${{ inputs.require_on_main }}
+          ALLOW_PRERELEASE: ${{ inputs.allow_prerelease }}
+        run: |
+          "$GITHUB_WORKSPACE/release-standard/scripts/tag-gate.sh" \
+            --repo "$GITHUB_WORKSPACE/source" \
+            --tag "$RELEASE_TAG" --ref "$RELEASE_REF" \
+            --signers "$SIGNERS_PATH" \
+            --version-file "$VERSION_FILE" --version-regex "$VERSION_REGEX" \
+            --require-signed "$REQUIRE_SIGNED" \
+            --require-on-main "$REQUIRE_ON_MAIN" \
+            --main-ref refs/remotes/origin/main \
+            --allow-prerelease "$ALLOW_PRERELEASE"
+
+      # No module cache on release jobs: nothing restored from a cache may
+      # reach a published build.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: source/${{ inputs.go_version_file }}
+          cache: false
+
+      - name: Lint the caller GoReleaser config against the standard
+        working-directory: release-standard
+        env:
+          GOFLAGS: -mod=readonly
+          GOTOOLCHAIN: auto
+          EXPECT_MAIN: ${{ inputs.main_package }}
+          EXPECT_BINARY: ${{ inputs.binary }}
+        run: |
+          go run ./cmd/release-standard-lint \
+            -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
+            "$GITHUB_WORKSPACE/source/.goreleaser.yml"
+
+      - name: Caller admission command
+        if: inputs.admission_command != ''
+        working-directory: source
+        env:
+          ADMISSION_COMMAND: ${{ inputs.admission_command }}
+        run: bash -euo pipefail -c "$ADMISSION_COMMAND"
+
+  publish:
+    name: Publish
+    needs: admission
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out the caller at the tag commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          fetch-depth: 0
+          submodules: ${{ inputs.submodules }}
+          persist-credentials: false
+
+      # Shared scripts come from this repository at the exact commit of this
+      # workflow file, never from the caller. job.workflow_sha is the called
+      # workflow's commit (github.* belongs to the caller). An empty value
+      # would make checkout fall back to the default branch, so refuse it.
+      - name: Resolve this workflow's commit
+        id: standard
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          printf '%s\n' "$WORKFLOW_SHA" | grep -Eqx '[0-9a-f]{40}' || {
+            echo '::error::REFUSED[standard_sha_unavailable]: job.workflow_sha is not a full commit SHA'
+            exit 1
+          }
+          echo "sha=$WORKFLOW_SHA" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the release standard at this workflow's commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ env.RELEASE_STANDARD_REPOSITORY }}
+          ref: ${{ steps.standard.outputs.sha }}
+          path: release-standard
+          persist-credentials: false
+
+      - name: Confirm the standard checkout commit
+        env:
+          WORKFLOW_SHA: ${{ steps.standard.outputs.sha }}
+        run: |
+          [ "$(git -C "$GITHUB_WORKSPACE/release-standard" rev-parse HEAD)" = "$WORKFLOW_SHA" ] || {
+            echo '::error::REFUSED[standard_sha_mismatch]: release-standard checkout is not job.workflow_sha'
+            exit 1
+          }
+
+      # Recheck in the publish checkout in case the tag moved after admission.
+      - name: Recheck the admitted tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
+          SIGNERS_PATH: ${{ inputs.allowed_signers_path }}
+          VERSION_FILE: ${{ inputs.version_source_file }}
+          VERSION_REGEX: ${{ inputs.version_source_regex }}
+          REQUIRE_SIGNED: ${{ inputs.require_signed_tag }}
+          REQUIRE_ON_MAIN: ${{ inputs.require_on_main }}
+          ALLOW_PRERELEASE: ${{ inputs.allow_prerelease }}
+        run: |
+          "$GITHUB_WORKSPACE/release-standard/scripts/tag-gate.sh" \
+            --repo "$GITHUB_WORKSPACE/source" \
+            --tag "$RELEASE_TAG" --ref "$RELEASE_REF" \
+            --signers "$SIGNERS_PATH" \
+            --version-file "$VERSION_FILE" --version-regex "$VERSION_REGEX" \
+            --require-signed "$REQUIRE_SIGNED" \
+            --require-on-main "$REQUIRE_ON_MAIN" \
+            --main-ref refs/remotes/origin/main \
+            --allow-prerelease "$ALLOW_PRERELEASE"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: source/${{ inputs.go_version_file }}
+          cache: false
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v2.6.1
+
+      # PIN-REQUIRED: curator uses anchore/sbom-action/download-syft@v0, which
+      # is not pinned. Replace this ref with a full commit SHA and a version
+      # comment (see NOTES.md). Until then the job fails here, closed.
+      - uses: anchore/sbom-action/download-syft@PIN-REQUIRED
+
+      # The before hook (signing-gate.sh) refuses partial or required-but-absent
+      # signing configuration before any build. Only this step gets secrets.
+      - name: Build, sign, notarize and publish
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          workdir: source
+          args: release --clean --config .goreleaser.yml
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_STANDARD_SCRIPTS: ${{ github.workspace }}/release-standard/scripts
+          RELEASE_REQUIRE_SIGNING: ${{ inputs.require_signing }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      # PIN-REQUIRED: curator uses actions/attest-build-provenance@v2, which is
+      # not pinned. Replace this ref with a full commit SHA and a version
+      # comment (see NOTES.md).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@PIN-REQUIRED
+        with:
+          subject-path: |
+            source/dist/*.tar.gz
+            source/dist/*.zip
+            source/dist/*.deb
+            source/dist/*.rpm
+            source/dist/*.pkg.tar.zst
+            source/dist/checksums.txt
