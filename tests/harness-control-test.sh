@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Instrument controls: proves the gate harnesses are not blind. Each control
-# copies a gate into scratch (the tracked scripts are never edited), plants a
-# bypass, confirms the plant applied, reruns the full harness against the
-# mutant and requires the harness to FAIL on the exact case the bypass
-# defeats. A plant that did not apply, or a harness that passes, fails here.
+# Instrument controls: proves the gate harnesses and the Go lint suite are
+# not blind. Each control copies a gate (or the lint module) into scratch, so
+# tracked files are never edited, plants a bypass or narrowing, confirms the
+# plant applied, reruns the full harness against the mutant and requires it
+# to FAIL on the exact case the plant defeats. A plant that did not apply, or
+# a harness that passes, fails here.
 set -eu -o pipefail
 # shellcheck source=tests/lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -96,5 +97,59 @@ if plant_literal "$REPO_ROOT/scripts/cosign-sign-checksum.sh" "$cosign_mutant" \
 else
 	fail cosign-sign-output-bypass 'plant did not apply to scripts/cosign-sign-checksum.sh'
 fi
+
+# --- Lint narrowing controls ---------------------------------------------
+# Each control copies the module into scratch, narrows one rule so it no
+# longer reports its own ID (the call reports another registered ID with the
+# same arguments), and requires the Go suite to FAIL naming that rule's
+# driving test. The unmodified copy must pass first, so a failure comes from
+# the narrowing and not from the copy. Go caches stay in the scratch root.
+mkdir -p "$SCRATCH/go-build" "$SCRATCH/go-mod" "$SCRATCH/go-path"
+export GOCACHE="$SCRATCH/go-build" GOMODCACHE="$SCRATCH/go-mod" GOPATH="$SCRATCH/go-path"
+export GOFLAGS=-mod=readonly
+
+# lint_copy DEST: the module, templates and workflows the Go tests read.
+lint_copy() {
+	mkdir -p "$1/.github"
+	cp "$REPO_ROOT/go.mod" "$REPO_ROOT/go.sum" "$1/"
+	cp -R "$REPO_ROOT/cmd" "$REPO_ROOT/template" "$1/"
+	cp -R "$REPO_ROOT/.github/workflows" "$1/.github/"
+}
+
+# Proves the copied suite passes unmodified (control for the controls below).
+lint_copy "$SCRATCH/lint-base"
+if (cd "$SCRATCH/lint-base" && go test -count=1 ./cmd/release-standard-lint/) >"$SCRATCH/lint-base.log" 2>&1; then
+	pass lint-copy-baseline
+else
+	fail lint-copy-baseline "unmodified copy failed; log: $SCRATCH/lint-base.log"
+fi
+
+# lint_narrowing LABEL OLD_CALL NEW_CALL TEST_NAME
+lint_narrowing() {
+	local label=$1 old=$2 new=$3 test_name=$4 dir="$SCRATCH/lint-$1" rc=0 file count
+	lint_copy "$dir"
+	file="$dir/cmd/release-standard-lint/lint.go"
+	count=$(grep -Fc -- "$old" "$file" || true)
+	if [ "$count" != 1 ]; then
+		fail "$label" "plant matches $count lines of lint.go, want 1"
+		return
+	fi
+	OLD=$old NEW=$new awk '{ i = index($0, ENVIRON["OLD"]); if (i) $0 = substr($0, 1, i - 1) ENVIRON["NEW"] substr($0, i + length(ENVIRON["OLD"])); print }' \
+		"$REPO_ROOT/cmd/release-standard-lint/lint.go" >"$file"
+	(cd "$dir" && go test -count=1 ./cmd/release-standard-lint/) >"$SCRATCH/$label.log" 2>&1 || rc=$?
+	if [ "$rc" -ne 0 ] && grep -q -- "--- FAIL: $test_name" "$SCRATCH/$label.log"; then
+		pass "$label"
+	else
+		fail "$label" "suite did not catch the narrowed rule (rc=$rc); log: $SCRATCH/$label.log"
+	fi
+}
+
+# Proves the Go suite kills each of the three rules the r1 review found
+# undriven, and the two new P1 rules, when narrowed away.
+lint_narrowing lint-narrow-builds-missing 'f.add("builds-missing", ' 'f.add("config-version", ' TestBuildsAndNfpmsMissing
+lint_narrowing lint-narrow-nfpm-missing 'f.add("nfpm-missing", ' 'f.add("config-version", ' TestBuildsAndNfpmsMissing
+lint_narrowing lint-narrow-skip-upload 'f.add("skip-upload", ' 'f.add("cask-skip-upload", ' TestSkipUpload
+lint_narrowing lint-narrow-hook-order 'f.add("signing-gate-hook-order", "before.hooks[0] must be %s; ' 'f.add("signing-gate-hook", "before.hooks[0] must be %s; ' TestSigningGateHookOrder
+lint_narrowing lint-narrow-notarize-uncovered 'f.add("notarize-uncovered", "builds[%d]' 'f.add("notarize-missing", "builds[%d]' TestNotarizeCoverage
 
 finish harness-control-test

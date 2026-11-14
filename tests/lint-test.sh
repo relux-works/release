@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# release-standard-lint controls. Runs the Go unit tests (one planted drift
-# per rule next to the template positive) and checks the CLI contract on
-# scratch copies of the templates. Go caches live in the scratch root; the
+# release-standard-lint controls. Runs the Go unit tests (planted negatives
+# next to valid positives; TestMain fails the run if any registered finding
+# ID has no driving negative test) and checks the CLI contract on scratch
+# copies of the templates. Go caches live in the scratch root; the
 # first run needs network access to download gopkg.in/yaml.v3 via GOPROXY.
 set -eu -o pipefail
 # shellcheck source=tests/lib.sh
@@ -12,8 +13,11 @@ export GOCACHE="$SCRATCH/go-build" GOMODCACHE="$SCRATCH/go-mod" GOPATH="$SCRATCH
 export GOFLAGS=-mod=readonly
 cd "$REPO_ROOT"
 
-# Proves every lint rule fires on its own planted drift and stays silent on
-# the template (see cmd/release-standard-lint/lint_test.go).
+# Proves the Go suite passes: every registered finding ID fires on at least
+# one planted input that a test expects it on, the templates pass, and the
+# reusable workflow meets its publish contract (see
+# cmd/release-standard-lint/*_test.go). harness-control-test.sh shows the
+# suite fails when individual rules are narrowed away.
 if go test -count=1 ./cmd/release-standard-lint/ >"$SCRATCH/go-test.log" 2>&1; then
 	pass go-unit-tests
 else

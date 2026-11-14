@@ -62,9 +62,48 @@ type Options struct {
 	ExpectBinary string
 }
 
+// FindingIDs lists every finding ID the lint can report. add refuses any
+// other ID, and the test suite's TestMain requires a driving negative test
+// for each one, so a new rule cannot ship without a test.
+var FindingIDs = []string{
+	"placeholder-left",
+	"config-version",
+	"protected-env",
+	"signing-gate-hook",
+	"signing-gate-hook-order",
+	"builds-missing",
+	"build-cgo-enabled",
+	"build-mod-readonly",
+	"build-trimpath",
+	"build-buildvcs",
+	"build-flags-template",
+	"build-ldflags",
+	"build-toolchain-hook",
+	"build-overrides",
+	"build-main-mismatch",
+	"build-binary-mismatch",
+	"notarize-missing",
+	"notarize-uncovered",
+	"nfpm-missing",
+	"nfpm-formats",
+	"nfpm-bindir",
+	"checksum-name",
+	"cosign-checksum-sign",
+	"sbom-archive",
+	"cask-skip-upload",
+	"skip-upload",
+	"release-prerelease",
+	"standard-workflow-unpinned",
+	"standard-workflow-missing",
+	"goreleaser-unpinned",
+}
+
 type findings []Finding
 
 func (f *findings) add(id, format string, args ...any) {
+	if !contains(FindingIDs, id) {
+		panic("release-standard-lint: unregistered finding ID " + id)
+	}
 	*f = append(*f, Finding{ID: id, Message: fmt.Sprintf(format, args...)})
 }
 

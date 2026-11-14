@@ -2,11 +2,39 @@ package main
 
 import (
 	"bytes"
+	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// asserted records every finding ID that some test asserted to fire on its
+// planted input (hasID returning true).
+var asserted = map[string]bool{}
+
+// TestMain proves no registered finding ID lacks a driving negative test:
+// after a full run (no -run filter) every ID in FindingIDs must have been
+// asserted by hasID on an input that fires it. Limit: it proves that each
+// rule fired where a test expected it, not that the planted input is the
+// only way to trigger the rule.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if code == 0 && flag.Lookup("test.run").Value.String() == "" {
+		var missing []string
+		for _, id := range FindingIDs {
+			if !asserted[id] {
+				missing = append(missing, id)
+			}
+		}
+		if len(missing) > 0 {
+			fmt.Fprintf(os.Stderr, "FAIL: finding IDs without a driving negative test: %s\n", strings.Join(missing, ", "))
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
 
 func readTemplate(t *testing.T, name string) string {
 	t.Helper()
@@ -36,7 +64,11 @@ func ids(found []Finding) []string {
 }
 
 func hasID(found []Finding, id string) bool {
-	return contains(ids(found), id)
+	if contains(ids(found), id) {
+		asserted[id] = true
+		return true
+	}
+	return false
 }
 
 // Proves the positive control: the shipped template satisfies every rule
@@ -63,10 +95,11 @@ func TestPlaceholdersRefusedByDefault(t *testing.T) {
 	}
 }
 
-// Proves each rule detects its own planted drift in an otherwise valid
-// template. Each case names the single rule it targets; a case passes only if
-// that rule fires, and the template positive above shows it does not fire
-// on the unmodified file.
+// Proves each listed rule detects its own planted drift in an otherwise
+// valid template: a case passes only if its named rule fires, and the
+// template positive above shows it does not fire on the unmodified file.
+// This table covers the single-line drifts; the other rules have their own
+// tests below, and TestMain checks that every finding ID is driven by one.
 func TestPlantedDrift(t *testing.T) {
 	cases := []struct {
 		name, old, replacement, want string
@@ -364,6 +397,62 @@ func TestCosignChecksumSign(t *testing.T) {
 				t.Fatalf("unexpected findings %v", found)
 			}
 		})
+	}
+}
+
+// Proves a config without builds or without nfpms is refused (the empty
+// list and the absent key), next to the template positive that has both.
+func TestBuildsAndNfpmsMissing(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	cases := []struct{ name, old, replacement, want string }{
+		{"empty builds", "\nbuilds:\n", "\nbuilds: []\nx_builds:\n", "builds-missing"},
+		{"absent builds", "\nbuilds:\n", "\nx_builds:\n", "builds-missing"},
+		{"empty nfpms", "\nnfpms:\n", "\nnfpms: []\nx_nfpms:\n", "nfpm-missing"},
+		{"absent nfpms", "\nnfpms:\n", "\nx_nfpms:\n", "nfpm-missing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if found := lintTemplate(t, plant(t, template, tc.old, tc.replacement)); !hasID(found, tc.want) {
+				t.Fatalf("want %s, got %v", tc.want, ids(found))
+			}
+		})
+	}
+	if found := lintTemplate(t, template); hasID(found, "builds-missing") || hasID(found, "nfpm-missing") {
+		t.Fatalf("template: unexpected %v", ids(found))
+	}
+}
+
+// Proves brews and scoops entries must skip the upload for prereleases:
+// skip_upload false, absent or the string "false" is refused for each key,
+// while auto and true are accepted.
+func TestSkipUpload(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	const tail = "changelog:\n  use: github\n"
+	with := func(key, setting string) string {
+		return plant(t, template, tail, tail+key+":\n  - name: __BINARY__\n"+setting)
+	}
+	for _, key := range []string{"brews", "scoops"} {
+		for name, setting := range map[string]string{
+			"false":        "    skip_upload: false\n",
+			"absent":       "",
+			"string false": "    skip_upload: 'false'\n",
+		} {
+			t.Run(key+"/"+name, func(t *testing.T) {
+				if found := lintTemplate(t, with(key, setting)); !hasID(found, "skip-upload") {
+					t.Fatalf("want skip-upload, got %v", ids(found))
+				}
+			})
+		}
+		for name, setting := range map[string]string{
+			"auto": "    skip_upload: auto\n",
+			"true": "    skip_upload: true\n",
+		} {
+			t.Run(key+"/"+name+" control", func(t *testing.T) {
+				if found := lintTemplate(t, with(key, setting)); len(found) != 0 {
+					t.Fatalf("unexpected findings %v", found)
+				}
+			})
+		}
 	}
 }
 
