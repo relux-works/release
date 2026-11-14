@@ -86,10 +86,15 @@ list of the org secrets (ask the owner).
 
    Exit 0 prints `release-standard-lint: ok`; exit 1 lists named findings.
    Keep the template's signing parts as they are: the signing gate stays the
-   first `before` hook, the `signs` entry runs the shared wrapper, notarize
-   `ids` select every Darwin build, and no `env` list sets
-   `RELEASE_REQUIRE_SIGNING`, `RELEASE_STANDARD_SCRIPTS`, a signing name,
-   `TAP_GITHUB_TOKEN` or `PATH` (`protected-env`).
+   only `before` hook, the `signs` entry runs the shared wrapper, notarize
+   `ids` select every Darwin build with exactly the build ids (no padding),
+   and no `env` list sets `RELEASE_REQUIRE_SIGNING`, `RELEASE_STANDARD_SCRIPTS`,
+   a signing name, `TAP_GITHUB_TOKEN`, `PATH` or a `GO*` name other than
+   `GOFLAGS` in build env (`protected-env`). Env entries and flags are
+   checked byte for byte. Nothing in the config may run your own commands
+   during the release (`caller-hook`): no other before hooks, build hooks,
+   extra `signs`, `binary_signs`, `docker_signs`, `publishers`, `upx`, SBOM
+   commands or `-toolexec`. Put repo-specific checks in `admission_command`.
 6. Optional inputs in `release.yml` (defaults in brackets):
    `allowed_signers_path` [.github/release-signers], `require_signed_tag` [true],
    `require_on_main` [true], `allow_prerelease` [false], `require_signing` [true],
@@ -235,7 +240,8 @@ the patch version.
   provide `job.workflow_sha` or the checkout drifted. Do not replace it with a
   branch ref; report it.
 - `standard-checkout-check: REFUSED[standard_tree_modified]`: a file of the
-  standard checkout changed before GoReleaser. Report it; do not rerun around it.
+  standard checkout changed before GoReleaser, or (in the step after
+  GoReleaser) while it ran. Report it; do not rerun around it.
 - `cosign-sign-checksum: REFUSED[certificate_missing|signature_missing|cosign_failed]`:
   cosign did not produce `checksums.txt.pem` and `.sig`; nothing was published.
   Check the job's `id-token: write` permission and the cosign log.

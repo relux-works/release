@@ -221,3 +221,44 @@ refused as a prohibited format (fail closed).
 Log: `.temp/checks-r2-01.log` (gitignored). The scratch module cache was seeded
 once from this host's existing module cache through a local `file://` proxy
 (no network); `go.sum` verified the yaml.v3 v3.0.1 zip.
+
+## Review r2 fixes
+
+Revision r3 against the r2 delta review (REVISION_REQUIRED, five findings)
+on head `66b5f07`. **All tests named below are UNRUN until hosted CI runs
+them**; this host ran static checks only. The new mutant plants were applied
+to scratch copies and checked statically (each matches once and changes the
+file; the Go mutants pass `go vet`; the workflow mutants pass actionlint
+except the intended `if: false` constant-condition warning).
+
+| Finding ID | Commit | Tests |
+| --- | --- | --- |
+| `caller-controlled-signing-gate` (P1, post-gate substitution) | `b828b19` (lint), `1712d6d` (post-GoReleaser tree check) | `TestCallerHooksRefused`; engine `later-before-*`, `build-pre-*` (wrapper replaced, `*-post-check` refuses 31, `*-lint` caller-hook) with `engine-valid-post-check` as control; `TestSavedGateStepsExecute` (post check refuses a replaced wrapper); narrowings `lint-narrow-later-before-hook`, `lint-narrow-build-hooks`; mutant `workflow-post-check-continue` |
+| `notarize-uncovered-build-ids` (P1, whitespace) | `b828b19` | `TestNotarizeCoverage` `leading space id`, `trailing space id`, `padded build id`, `padded project name` (wrong-id and subset cases kept); engine `engine-valid-darwin-selected`, `padded-id-engine-selects-nothing`, `padded-id-lint`; narrowing `lint-narrow-trimmed-ids` |
+| `non-ssh-signature-optout` (P2, CRLF) | `8a81700` | `crlf-pgp-signature`, `crlf-pgp-signature-opt-out`, `crlf-x509-signature`, `crlf-x509-signature-opt-out`, `pgp-message-opt-out`, next to the LF, unsigned and trusted-SSH controls; mutant `tag-gate-crlf-armor` (`16df84a`) |
+| `lint-effective-option-override` (P2, raw env) | `b828b19` | `TestEffectiveBuildSettings` `cgo value trailing space` ('CGO_ENABLED=0 ') and neighbours (tab, leading value space, name spaces, GOFLAGS value spaces, padded flags); engine `engine-valid-build-metadata`, `cgo-space-engine-route-live`, `cgo-space-lint` (`go version -m`); narrowing `lint-narrow-trimmed-env` |
+| `workflow-gate-narrowing-undetected` (P2) | `1712d6d` | `TestReusableWorkflowGatesBeforeGoReleaser` (if false, conditional if, continue-on-error, shell override, no-op and echoed bodies for each gate step), `TestSavedGateStepsExecute`; mutants `workflow-gate-if-false`, `workflow-gate-noop-body` (`16df84a`) |
+
+Hook surfaces: checked against GoReleaser v2.17.0 `pkg/config/config.go`
+(public upstream source). `before.hooks` is a string list; build,
+`universal_binaries` and `dockers_v2` hooks are pre/post lists of
+`{cmd, dir, env, output}`; `signs`, `binary_signs`, `docker_signs`, `sboms`
+and `publishers` carry a command; `upx` names a binary. The `Project` struct
+shows no global `after` hooks. nFPM scripts and Homebrew cask hooks are
+packaged, not run at release. The lint also refuses `-toolexec` and GO* env
+names (toolchain download, proxy, checksum database), which would run code
+the standard did not choose. Caller code still runs in admission through
+`admission_command`, on a separate runner without secrets.
+
+Engine assumptions to confirm in CI: `dist/artifacts.json` lists binaries
+with `goos`, `goarch`, `path` and `extra.ID`; a cgo-enabled host build needs
+no C toolchain for this pure-Go fixture, and the Ubuntu runner reports
+`CGO_ENABLED=1` for `'CGO_ENABLED=0 '` as the reviewer measured. The engine
+job now builds all four targets instead of `--single-target`.
+
+README's status line is updated (reviewer's nonblocking note).
+
+### Checks that ran (this host, 2026-11-14)
+
+See `.temp/checks-r3-01.log`: sh -n, bash -n, shellcheck 0.11.0,
+actionlint 1.7.12 with the config file, `go build`, `go vet`, `gofmt -l`.

@@ -11,8 +11,12 @@ names it once; NOTES.md lists each place.
 
 ## Status
 
-P0 scratch, not published. Nothing here has run in GitHub Actions yet, and the
-tests have not been executed (only static checks; see NOTES.md).
+Not published yet. Hosted CI (`.github/workflows/ci.yml`: static checks,
+Ubuntu and macOS tests, and the real-engine job with pinned GoReleaser
+v2.17.0) runs on every pull request and was green on `66b5f07` (review r2).
+No release has gone through `go-release.yml` yet, so its hosted run, Apple
+notarization and publication are unproven. Changes after `66b5f07` are
+statically checked until CI runs them; NOTES.md records which.
 `linux-repos.yml` is disabled and unimplemented by design.
 
 ## Parts
