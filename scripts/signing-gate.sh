@@ -1,10 +1,17 @@
 #!/bin/sh
+# Tracing goes off before anything else, so no field can reach an xtrace log,
+# also when this file is run with sh -x or bash -x or sourced from a traced
+# shell. The brace group hides the trace line of this very command.
+{ set +x; } 2>/dev/null
 # Darwin signing presence gate for the Relux release standard.
 #
-# Runs as the GoReleaser `before` hook, so it sees exactly the environment the
-# GoReleaser step sees. Presence only: it never prints a value, signs anything
-# or contacts Apple. Empty values count as absent, matching GoReleaser's
-# isEnvSet predicate and GitHub's empty expansion of an unset secret.
+# go-release.yml runs it as its own step before GoReleaser, from the verified
+# standard checkout, with values from workflow inputs and secrets only. The
+# GoReleaser `before` hook runs it again as defense in depth. Presence only:
+# it never prints or copies a value, signs anything or contacts Apple. Each
+# field is tested with ${NAME:+1}, which yields 1 or nothing and never the
+# value. Empty values count as absent, matching GoReleaser's isEnvSet
+# predicate and GitHub's empty expansion of an unset secret.
 #
 #   RELEASE_REQUIRE_SIGNING  true (default) or false
 #
@@ -31,16 +38,16 @@ esac
 
 present=0
 missing=
+set_flag=
 for name in MACOS_SIGN_P12 MACOS_SIGN_P12_PASSWORD ASC_ISSUER_ID ASC_KEY_ID ASC_KEY_P8; do
-	# Fixed names only; the value is tested for emptiness and never printed.
-	eval "value=\${$name:-}"
-	if [ -n "$value" ]; then
+	# Fixed names only. set_flag is 1 or empty; the value is never expanded.
+	eval "set_flag=\${$name:+1}"
+	if [ "$set_flag" = 1 ]; then
 		present=$((present + 1))
 	else
 		missing="$missing $name"
 	fi
 done
-value=
 
 case $present in
 0)

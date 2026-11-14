@@ -20,6 +20,18 @@ plant_mutant() {
 	fi
 }
 
+# plant_literal SOURCE DEST OLD_LINE NEW_LINE: copy SOURCE with the one line
+# equal to OLD_LINE replaced, or fail when OLD_LINE is not exactly one line.
+# Values pass through ENVIRON, so backslashes and $ stay literal.
+plant_literal() {
+	local count
+	count=$(grep -Fxc -- "$3" "$1" || true)
+	[ "$count" = 1 ] || return 1
+	OLD=$3 NEW=$4 awk '$0 == ENVIRON["OLD"] { print ENVIRON["NEW"]; next } { print }' "$1" >"$2"
+	chmod +x "$2"
+	! cmp -s "$1" "$2"
+}
+
 # control LABEL HARNESS ENV_NAME MUTANT EXPECTED_FAIL_PREFIX
 control() {
 	local label=$1 harness=$2 env_name=$3 mutant=$4 expected=$5
@@ -54,6 +66,22 @@ if plant_mutant "$REPO_ROOT/scripts/signing-gate.sh" "$signing_mutant" \
 	control signing-gate-partial-bypass signing-gate-test.sh SIGNING_GATE "$signing_mutant" 'partial-require-'
 else
 	fail signing-gate-partial-bypass 'plant did not apply to scripts/signing-gate.sh'
+fi
+
+# Proves signing-gate-test.sh catches a gate that leaks values into xtrace:
+# the mutant drops the tracing guard and copies each value into a traced
+# assignment while keeping every exit code, so only the trace cases can fail.
+leak_step="$SCRATCH/mutants/signing-gate-untraced.sh"
+leak_mutant="$SCRATCH/mutants/signing-gate-leak.sh"
+# shellcheck disable=SC2016 # literal $ in the planted lines
+if plant_literal "$REPO_ROOT/scripts/signing-gate.sh" "$leak_step" \
+	'{ set +x; } 2>/dev/null' ':' &&
+	plant_literal "$leak_step" "$leak_mutant" \
+		"$(printf '\teval "set_flag=\\${$name:+1}"')" \
+		"$(printf '\teval "set_flag=\\${$name:+1} leak=\\${$name:-}"')"; then
+	control signing-gate-trace-leak signing-gate-test.sh SIGNING_GATE "$leak_mutant" 'trace-exec-sh-full:'
+else
+	fail signing-gate-trace-leak 'plant did not apply to scripts/signing-gate.sh'
 fi
 
 finish harness-control-test
