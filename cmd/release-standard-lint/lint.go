@@ -172,32 +172,20 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 				checkEnv(fmt.Sprintf("%s.hooks.%s[%d].env", where, phase, j), asMap(h)["env"], &f)
 			}
 		}
-		env := stringList(m["env"])
-		if !contains(env, "CGO_ENABLED=0") {
-			f.add("build-cgo-enabled", "%s: env must contain CGO_ENABLED=0", where)
-		}
-		if !contains(env, "GOFLAGS=-mod=readonly") {
-			f.add("build-mod-readonly", "%s: env must contain GOFLAGS=-mod=readonly", where)
-		}
-		flags := stringList(m["flags"])
-		if !contains(flags, "-trimpath") {
-			f.add("build-trimpath", "%s: flags must contain -trimpath", where)
-		}
-		if !contains(flags, "-buildvcs=false") {
-			f.add("build-buildvcs", "%s: flags must contain -buildvcs=false", where)
-		}
-		ld := strings.Fields(strings.Join(stringList(m["ldflags"]), " "))
-		var missing []string
-		for _, want := range []string{"-s", "-w", "-buildid="} {
-			if !contains(ld, want) {
-				missing = append(missing, want)
-			}
-		}
-		if len(missing) > 0 {
-			f.add("build-ldflags", "%s: ldflags missing %s", where, strings.Join(missing, " "))
-		}
+		checkBuildEnv(where, m["env"], &f)
+		checkBuildFlags(where, stringList(m["flags"]), &f)
+		checkLdflags(where, stringList(m["ldflags"]), &f)
 		if asString(m["tool"]) != toolchainHook {
 			f.add("build-toolchain-hook", "%s: tool must be %s", where, toolchainHook)
+		}
+		if _, ok := m["gobinary"]; ok {
+			f.add("build-toolchain-hook", "%s: gobinary must not be set; tool is %s", where, toolchainHook)
+		}
+		if builder := asString(m["builder"]); builder != "" && builder != "go" {
+			f.add("build-toolchain-hook", "%s: builder must be go, got %q", where, builder)
+		}
+		if _, ok := m["overrides"]; ok {
+			f.add("build-overrides", "%s: overrides must not be set; per-target env, flags or ldflags would replace the standard ones", where)
 		}
 	}
 	if opt.ExpectMain != "" && !mainFound {
@@ -275,6 +263,118 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("release-prerelease", "release.prerelease must be auto")
 	}
 	return f, nil
+}
+
+// envValues returns, per name, every value a KEY=VALUE list assigns in
+// order. Entries that are not strings are skipped (checkEnv refuses them).
+func envValues(v any) map[string][]string {
+	out := map[string][]string{}
+	for _, e := range asList(v) {
+		s, ok := e.(string)
+		if !ok {
+			continue
+		}
+		name, value, _ := strings.Cut(strings.TrimSpace(s), "=")
+		name = strings.TrimSpace(name)
+		out[name] = append(out[name], value)
+	}
+	return out
+}
+
+// checkBuildEnv requires CGO_ENABLED=0 and GOFLAGS=-mod=readonly as the only
+// assignment of each name. A later duplicate would win in the build
+// environment, so any second assignment, even an equal one, is refused.
+func checkBuildEnv(where string, v any, f *findings) {
+	values := envValues(v)
+	for _, rule := range []struct{ id, name, want string }{
+		{"build-cgo-enabled", "CGO_ENABLED", "0"},
+		{"build-mod-readonly", "GOFLAGS", "-mod=readonly"},
+	} {
+		got := values[rule.name]
+		if len(got) != 1 || got[0] != rule.want {
+			f.add(rule.id, "%s: env must assign %s=%s exactly once, got %q", where, rule.name, rule.want, got)
+		}
+	}
+}
+
+// flagName returns the name of a command-line flag token (one or two
+// leading dashes, up to "="), or "" when the token is not a flag.
+func flagName(token string) string {
+	if !strings.HasPrefix(token, "-") {
+		return ""
+	}
+	name := strings.TrimPrefix(strings.TrimPrefix(token, "-"), "-")
+	name, _, _ = strings.Cut(name, "=")
+	return name
+}
+
+// checkBuildFlags validates the effective go build flags. GoReleaser passes
+// each entry as one argument and the go command keeps the last value of a
+// repeated flag, so -trimpath and -buildvcs=false must each appear exactly
+// once in that form; -mod may only repeat -mod=readonly (a flag beats
+// GOFLAGS); -ldflags belongs in ldflags; templated entries cannot be checked.
+func checkBuildFlags(where string, flags []string, f *findings) {
+	counts := map[string][]string{}
+	for _, flag := range flags {
+		if strings.Contains(flag, "{{") {
+			f.add("build-flags-template", "%s: flag %q is templated and cannot be checked", where, flag)
+			continue
+		}
+		name := flagName(flag)
+		counts[name] = append(counts[name], flag)
+	}
+	if got := counts["trimpath"]; len(got) != 1 || got[0] != "-trimpath" {
+		f.add("build-trimpath", "%s: flags must contain -trimpath exactly once and no other trimpath setting, got %q", where, got)
+	}
+	if got := counts["buildvcs"]; len(got) != 1 || got[0] != "-buildvcs=false" {
+		f.add("build-buildvcs", "%s: flags must contain -buildvcs=false exactly once and no other buildvcs setting, got %q", where, got)
+	}
+	for _, flag := range counts["mod"] {
+		if flag != "-mod=readonly" {
+			f.add("build-mod-readonly", "%s: flag %q overrides GOFLAGS=-mod=readonly", where, flag)
+		}
+	}
+	if got := counts["ldflags"]; len(got) > 0 {
+		f.add("build-ldflags", "%s: flags must not set -ldflags (%q); use ldflags", where, got)
+	}
+}
+
+// ldflagsTemplateRE matches the simple template fields allowed in ldflags;
+// they expand to one token without spaces.
+var ldflagsTemplateRE = regexp.MustCompile(`\{\{\s*\.(Version|Tag|Commit|ShortCommit|FullCommit|Date|CommitDate|CommitTimestamp|Timestamp|Major|Minor|Patch)\s*\}\}`)
+
+// checkLdflags validates the effective linker flags. GoReleaser joins the
+// entries with spaces into one -ldflags value, which go splits on spaces and
+// the linker parses with last-wins semantics. Only -s, -w, -buildid= and -X
+// are allowed; -s, -w and -buildid= must each appear exactly once in that
+// form. A two-argument -X consumes the next token, also one that looks like
+// a flag. Quotes and templates other than simple fields cannot be checked.
+func checkLdflags(where string, ldflags []string, f *findings) {
+	joined := ldflagsTemplateRE.ReplaceAllString(strings.Join(ldflags, " "), "T")
+	if strings.Contains(joined, "{{") || strings.ContainsAny(joined, `'"`) {
+		f.add("build-ldflags", "%s: ldflags may only template simple fields such as {{ .Version }} and must not quote", where)
+		return
+	}
+	counts := map[string][]string{}
+	tokens := strings.Fields(joined)
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		name := flagName(token)
+		switch {
+		case name == "X" && !strings.Contains(token, "="):
+			i++ // the next token is the -X value
+		case name == "X":
+		case name == "s" || name == "w" || name == "buildid":
+			counts[name] = append(counts[name], token)
+		default:
+			f.add("build-ldflags", "%s: ldflags token %q is not one of -s, -w, -buildid=, -X", where, token)
+		}
+	}
+	for _, rule := range []struct{ name, want string }{{"s", "-s"}, {"w", "-w"}, {"buildid", "-buildid="}} {
+		if got := counts[rule.name]; len(got) != 1 || got[0] != rule.want {
+			f.add("build-ldflags", "%s: ldflags must contain %s exactly once and no other %s setting, got %q", where, rule.want, rule.name, got)
+		}
+	}
 }
 
 // checkEnv refuses a protected name in a KEY=VALUE env list. A name that is

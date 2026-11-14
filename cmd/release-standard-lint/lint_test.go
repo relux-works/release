@@ -264,6 +264,57 @@ func TestNotarizeCoverage(t *testing.T) {
 	}
 }
 
+// Proves the lint checks the effective build settings, not token presence:
+// each case keeps the required tokens and adds a later assignment or option
+// that would override them in the real build (the review's CGO_ENABLED=1,
+// VCS stamping and non-empty build id among them), and must fire the named
+// rule. The positive shows unrelated env, flags and -X values next to the
+// standard ones are accepted, so the rules do not reject any addition.
+func TestEffectiveBuildSettings(t *testing.T) {
+	const (
+		envLine   = "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly]"
+		flagsLine = "flags: [-trimpath, -buildvcs=false]"
+		ldLine    = "      - -s -w -buildid= -X __VERSION_SYMBOL__={{ .Version }}"
+	)
+	template := readTemplate(t, ".goreleaser.yml")
+	cases := []struct{ name, old, replacement, want string }{
+		{"cgo override", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, CGO_ENABLED=1]", "build-cgo-enabled"},
+		{"cgo duplicate", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, CGO_ENABLED=0]", "build-cgo-enabled"},
+		{"goflags override", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, GOFLAGS=-mod=mod]", "build-mod-readonly"},
+		{"goflags extended", envLine, "env: [CGO_ENABLED=0, 'GOFLAGS=-mod=readonly -mod=mod']", "build-mod-readonly"},
+		{"trimpath disabled", flagsLine, "flags: [-trimpath, -buildvcs=false, -trimpath=false]", "build-trimpath"},
+		{"buildvcs re-enabled", flagsLine, "flags: [-trimpath, -buildvcs=false, -buildvcs=true]", "build-buildvcs"},
+		{"buildvcs bare", flagsLine, "flags: [-trimpath, -buildvcs=false, -buildvcs]", "build-buildvcs"},
+		{"mod flag", flagsLine, "flags: [-trimpath, -buildvcs=false, -mod=mod]", "build-mod-readonly"},
+		{"mod two-arg flag", flagsLine, "flags: [-trimpath, -buildvcs=false, -mod, mod]", "build-mod-readonly"},
+		{"ldflags in flags", flagsLine, "flags: [-trimpath, -buildvcs=false, '-ldflags=-buildid=x']", "build-ldflags"},
+		{"templated flag", flagsLine, "flags: [-trimpath, -buildvcs=false, '{{ if true }}-buildvcs=true{{ end }}']", "build-flags-template"},
+		{"buildid override", ldLine, ldLine + " -buildid=review-not-empty", "build-ldflags"},
+		{"symbols re-enabled", ldLine, ldLine + " -s=false", "build-ldflags"},
+		{"dwarf re-enabled", ldLine, ldLine + " -w=0", "build-ldflags"},
+		{"x swallows -s", ldLine, "      - -w -buildid= -X -s", "build-ldflags"},
+		{"env template in ldflags", ldLine, ldLine + " {{ .Env.LDX }}", "build-ldflags"},
+		{"quoted ldflags", ldLine, ldLine + ` '-buildid=x'`, "build-ldflags"},
+		{"other linker flag", ldLine, ldLine + " -linkmode=external", "build-ldflags"},
+		{"target overrides", "    goarch: [arm64, amd64]\n", "    goarch: [arm64, amd64]\n    overrides:\n      - goos: darwin\n        env: [CGO_ENABLED=1]\n", "build-overrides"},
+		{"gobinary", "    goarch: [arm64, amd64]\n", "    goarch: [arm64, amd64]\n    gobinary: go\n", "build-toolchain-hook"},
+		{"other builder", "    goarch: [arm64, amd64]\n", "    goarch: [arm64, amd64]\n    builder: rust\n", "build-toolchain-hook"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if found := lintTemplate(t, plant(t, template, tc.old, tc.replacement)); !hasID(found, tc.want) {
+				t.Fatalf("want %s, got %v", tc.want, ids(found))
+			}
+		})
+	}
+	benign := plant(t, template, envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, GOPRIVATE=example.invalid]")
+	benign = plant(t, benign, flagsLine, "flags: [-trimpath, -buildvcs=false, -tags=netgo, -mod=readonly]")
+	benign = plant(t, benign, ldLine, ldLine+" -X main.commit={{ .Commit }} -X=main.date={{ .Date }}")
+	if found := lintTemplate(t, benign); len(found) != 0 {
+		t.Fatalf("benign additions: unexpected findings %v", found)
+	}
+}
+
 // Proves the workflow inputs are cross-checked: a main/binary that the config
 // does not build is a finding, and the matching values are not.
 func TestExpectMainAndBinary(t *testing.T) {
