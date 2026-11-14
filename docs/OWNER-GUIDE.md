@@ -52,7 +52,44 @@ Steps for each new secret:
 
 For the existing `ASC_KEY_P8`: click its name in the same list, under
 **Repository access** click the gear, add the missing repositories, **Update
-selection**, **Save changes**. Before that, make sure the org value is the
+selection**, **Save changes**. In the UI the repositories already ticked stay
+ticked; only add ticks.
+
+> **Warning: `--repos` replaces the whole list.** `ASC_KEY_P8` already serves
+> other repositories. `gh secret set ASC_KEY_P8 --org relux-works --visibility
+> selected --repos a,b` (and the same call when updating any org secret's
+> value) sets the selected repositories to exactly `a,b`: every repository not
+> in that list silently loses the secret, and its next notarized release fails.
+> Either pass the full current list plus the new names, or add repositories
+> one at a time with the additive endpoint, which never removes anything.
+>
+> Names only, no values (run before and after, and compare):
+>
+> ```bash
+> gh api "orgs/$ORG/actions/secrets/ASC_KEY_P8/repositories" --paginate \
+>   --jq '.repositories[].full_name' | sort > asc-key-p8-repos.before
+> ```
+>
+> Additive, one repository at a time (the owner runs it; no value is involved):
+>
+> ```bash
+> REPO_ID=$(gh api "repos/$ORG/swarma-identity" --jq .id)
+> gh api -X PUT "orgs/$ORG/actions/secrets/ASC_KEY_P8/repositories/$REPO_ID"
+> ```
+>
+> If you do use `gh secret set ... --repos`, build the list from the
+> `before` file plus the new names, never from memory, and check afterwards
+> that the new list contains every line of the `before` file:
+>
+> ```bash
+> gh api "orgs/$ORG/actions/secrets/ASC_KEY_P8/repositories" --paginate \
+>   --jq '.repositories[].full_name' | sort > asc-key-p8-repos.after
+> comm -23 asc-key-p8-repos.before asc-key-p8-repos.after   # must print nothing
+> ```
+>
+> The same applies to every secret in the table once it serves more than one
+> repository. Setting a value stays an owner-only step in the UI or an
+> interactive prompt; never pass a value on the command line. Before that, make sure the org value is the
 current key (the curator ASC secrets were re-set on 2026-10-26 after the
 notary 401; if the org copy is older, update its value too with **Update
 secret**).
@@ -200,7 +237,7 @@ implement the stubs in `linux-repos.yml`.
 - [ ] Shared repository name chosen and repository created public
 - [ ] `main` protected; reusable workflows allowed for the org
 - [ ] Org secrets `MACOS_SIGN_P12`, `MACOS_SIGN_P12_PASSWORD`, `ASC_ISSUER_ID`, `ASC_KEY_ID` created
-- [ ] `ASC_KEY_P8` value current and its repository list extended
+- [ ] `ASC_KEY_P8` value current and its repository list extended additively (before/after names-only comparison prints nothing)
 - [ ] `TAP_GITHUB_TOKEN` fine-grained token created (homebrew-tap, Contents write), expiry in calendar
 - [ ] All six secrets scoped to: launcher, curator, a2a-swarm, swarma-identity (Namecoin repo later)
 - [ ] Names-only check passes; repo-level copies deleted on launcher and curator

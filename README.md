@@ -22,12 +22,14 @@ tests have not been executed (only static checks; see NOTES.md).
 | Go release workflow | `.github/workflows/go-release.yml` | Reusable `workflow_call`: admission (tag gate, lint, optional caller command) then publish (GoReleaser v2.17.0, cosign, syft, notarization, provenance) |
 | Linux repositories | `.github/workflows/linux-repos.yml` | Reusable, **disabled**: APT index and AUR `-bin` contract with failing stubs |
 | Tag gate | `scripts/tag-gate.sh` | Annotated, SSH-signed, allowlisted tag equal to the ref, HEAD and the version source; optional on-main and prerelease rules; named refusals with distinct exit codes |
-| Signing gate | `scripts/signing-gate.sh` | All-or-none presence of the five darwin signing secrets, with `require_signing` |
+| Signing gate | `scripts/signing-gate.sh` | All-or-none presence of the five darwin signing secrets, with `require_signing`; runs as its own publish step before GoReleaser, and as GoReleaser's first hook |
+| Checksum signing | `scripts/cosign-sign-checksum.sh` | Keyless `cosign sign-blob` over checksums.txt; refuses unless `.pem` and `.sig` were written |
+| Checkout check | `scripts/standard-checkout-check.sh` | The standard checkout's working tree equals `job.workflow_sha`, right before GoReleaser |
 | Toolchain | `scripts/go-toolchain.sh` | GoReleaser `tool`: GOTOOLCHAIN from the go.mod `go` line |
 | Consumer verification | `scripts/verify-release.sh` | cosign identity of the shared workflow, `sha256sum -c`, optional `gh attestation verify` |
 | Lint | `cmd/release-standard-lint` | Checks a caller `.goreleaser.yml` (and optionally its workflow) against the template |
 | Templates | `template/.goreleaser.yml`, `template/release.yml` | What a caller copies |
-| Tests | `tests/` | Gate, signing, lint and harness-control tests (throwaway git and ssh-keygen fixtures) |
+| Tests | `tests/` | Gate, signing, wrapper, checkout, lint, harness-control and real-engine tests (throwaway git, ssh-keygen and GoReleaser fixtures) |
 | Agent skill | `skills/relux-release/SKILL.md` | Adopt, tag, verify, troubleshoot |
 | Owner guide | `docs/OWNER-GUIDE.md` | Org secrets, tap token, APT/AUR keys, first release |
 
@@ -40,6 +42,7 @@ tests have not been executed (only static checks; see NOTES.md).
 | actionlint | Workflow checks (`.github/actionlint.yaml` ignores one known-new context) | `make check` | stdout |
 | Go | Build and vet the lint | `make check`; run: `go run ./cmd/release-standard-lint [-main PKG] [-binary NAME] [-workflow FILE] .goreleaser.yml` | stdout, exit 0/1/2 |
 | git, ssh-keygen | Test fixtures | used by `tests/tag-gate-test.sh` | scratch only |
+| GoReleaser v2.17.0 | Real-engine controls | `REQUIRE_ENGINE=1 GORELEASER=/path/to/goreleaser bash tests/engine-test.sh` (CI job `engine`; SKIP without a binary) | scratch only |
 | cosign, gh | Release verification | `scripts/verify-release.sh --dir DIR --repo OWNER/NAME --tag vX.Y.Z [--attest]` | stdout |
 
 ## Using it

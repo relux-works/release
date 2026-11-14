@@ -23,6 +23,8 @@ Parts you will touch:
 | Caller workflow template | `template/release.yml` |
 | GoReleaser template | `template/.goreleaser.yml` |
 | Tag gate / signing gate | `scripts/tag-gate.sh`, `scripts/signing-gate.sh` |
+| Checksum signing wrapper | `scripts/cosign-sign-checksum.sh` |
+| Standard checkout check | `scripts/standard-checkout-check.sh` |
 | Consumer verification | `scripts/verify-release.sh` |
 | Config lint | `cmd/release-standard-lint` |
 
@@ -33,6 +35,12 @@ Hard rules for agents:
 - Release tags are SSH-signed annotated tags made with the host's agent signing
   setup. Never sign with another key and never push a tag the owner did not ask for.
 - Never move or delete a published tag. A bad release gets a new patch version.
+- Never change an org secret's repository list yourself. When a repository
+  needs a secret, ask the owner, and point out that `gh secret set --repos`
+  replaces the whole selected-repository list (docs/OWNER-GUIDE.md, section 2):
+  the additive `PUT orgs/<org>/actions/secrets/<name>/repositories/<id>`
+  endpoint, or the full current list, keeps existing consumers. Names-only
+  check: `gh api orgs/relux-works/actions/secrets/ASC_KEY_P8/repositories --jq '.repositories[].full_name'`.
 
 ## 1. Adopt the standard in a repository
 
@@ -77,6 +85,11 @@ list of the org secrets (ask the owner).
    ```
 
    Exit 0 prints `release-standard-lint: ok`; exit 1 lists named findings.
+   Keep the template's signing parts as they are: the signing gate stays the
+   first `before` hook, the `signs` entry runs the shared wrapper, notarize
+   `ids` select every Darwin build, and no `env` list sets
+   `RELEASE_REQUIRE_SIGNING`, `RELEASE_STANDARD_SCRIPTS`, a signing name,
+   `TAP_GITHUB_TOKEN` or `PATH` (`protected-env`).
 6. Optional inputs in `release.yml` (defaults in brackets):
    `allowed_signers_path` [.github/release-signers], `require_signed_tag` [true],
    `require_on_main` [true], `allow_prerelease` [false], `require_signing` [true],
@@ -173,9 +186,13 @@ It means App Store Connect rejected the API key triple, not that the code is wro
 `signing-gate: REFUSED[partial_signing_config]: N of 5 ...; missing: <NAMES>`
 (exit 3) means some of MACOS_SIGN_P12, MACOS_SIGN_P12_PASSWORD, ASC_ISSUER_ID,
 ASC_KEY_ID, ASC_KEY_P8 reached the job and some did not. Usual causes: the repo
-is missing from one org secret's selected-repository list; the caller does not
-pass `secrets: inherit`; a repo-level copy is set to an empty value. Ask the
-owner to fix the scoping. Never work around it by unsetting secrets.
+is missing from one org secret's selected-repository list (often after a
+`gh secret set --repos` call replaced that list); the caller does not pass
+`secrets: inherit`; a repo-level copy is set to an empty value. Ask the owner
+to fix the scoping. Never work around it by unsetting secrets.
+
+The gate runs as the publish job's own `Signing presence gate` step before
+GoReleaser, and again as GoReleaser's first `before` hook.
 
 `signing-gate: REFUSED[signing_required_but_absent]` (exit 4): none of the five
 arrived and `require_signing` is true. Same fixes. Only the owner may decide to
@@ -199,10 +216,10 @@ Every refusal prints `tag-gate: REFUSED[<reason>]: <detail>`.
 | 15 | tag_name_mismatch | Tag object names another tag | Recreate the tag under its own name |
 | 16 | signers_file_missing | No allowed_signers at the tag commit | Add `.github/release-signers` on main |
 | 17 | unsigned_tag | No signature | Re-tag with `git tag -s` and agent-git-env |
-| 18 | non_ssh_signature | OpenPGP/X.509 signature | Sign with the SSH key |
+| 18 | non_ssh_signature | OpenPGP/X.509 signature block, also with `require_signed_tag: false` | Sign with the SSH key |
 | 19 | untrusted_signature | Key not in allowed_signers, or tampered | Use a listed key; owner adds keys on main |
 | 20 | commit_mismatch | Tag commit is not the checked-out commit | The tag moved; never move tags |
-| 21 | version_source_unreadable | Regex matches 0 or 2+ lines, no group, or bad version | Fix `version_source_regex` / file |
+| 21 | version_source_unreadable | Regex matches 0 or 2+ lines (empty captures count), no group, or bad version | Fix `version_source_regex` / file |
 | 22 | version_mismatch | Tag differs from the version source | Bump the source on main, new tag |
 | 23 | main_ref_missing | origin/main not fetched | Check the checkout step |
 | 24 | not_on_main | Tag commit is not on main | Merge to main first, tag the merged commit |
@@ -217,6 +234,11 @@ the patch version.
 - `standard_sha_unavailable` / `standard_sha_mismatch`: the runner did not
   provide `job.workflow_sha` or the checkout drifted. Do not replace it with a
   branch ref; report it.
+- `standard-checkout-check: REFUSED[standard_tree_modified]`: a file of the
+  standard checkout changed before GoReleaser. Report it; do not rerun around it.
+- `cosign-sign-checksum: REFUSED[certificate_missing|signature_missing|cosign_failed]`:
+  cosign did not produce `checksums.txt.pem` and `.sig`; nothing was published.
+  Check the job's `id-token: write` permission and the cosign log.
 - Lint findings in admission: fix the caller config; each finding ID maps to
   one rule in `cmd/release-standard-lint/lint.go`.
 - Tap upload failure: `TAP_GITHUB_TOKEN` is missing, expired or lacks
