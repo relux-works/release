@@ -17,9 +17,11 @@ name: Relux Go release
 # Signing admission does not depend on the caller config: the presence gate
 # runs as its own step before GoReleaser, from the verified standard checkout,
 # with values from inputs and secrets only. The lint (run again in publish)
-# refuses a config that sets a protected env name or runs a before hook ahead
-# of the standard gate hook, and the checkout tree is checked against
-# job.workflow_sha immediately before GoReleaser. The gate hook inside
+# refuses a config that sets a protected env name or runs any caller code
+# after the gate (before hooks other than the gate, build hooks, custom sign,
+# publisher, upx or SBOM commands, -toolexec), and the checkout tree is
+# checked against job.workflow_sha immediately before GoReleaser and again
+# immediately after it. The gate hook inside
 # GoReleaser stays as defense in depth.
 
 on:
@@ -344,6 +346,17 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      # Defense in depth, immediately after GoReleaser and before provenance:
+      # fail the job if anything changed the standard checkout while
+      # GoReleaser ran. The lint already refuses every config surface that
+      # runs caller code after the gate (caller-hook); this catches a gap.
+      - name: Confirm GoReleaser left the standard scripts unmodified
+        env:
+          WORKFLOW_SHA: ${{ steps.standard.outputs.sha }}
+        run: |
+          "$GITHUB_WORKSPACE/release-standard/scripts/standard-checkout-check.sh" \
+            "$GITHUB_WORKSPACE/release-standard" "$WORKFLOW_SHA"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
