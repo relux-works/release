@@ -157,3 +157,67 @@ runs tests executes `make test`.
 - Windows/zip and Scoop in the template (curator-only today; the lint accepts
   scoops with `skip_upload: auto`).
 - Running any test or workflow.
+
+## Review r1 fixes
+
+Revision r2 against the review of record (REVISION_REQUIRED, nine findings)
+on head `2e6649f`. **All tests named below are UNRUN until hosted CI runs
+them**: this host runs no tests, no `go test`, no lint CLI and no GoReleaser.
+The plants of the new mutation and narrowing controls were applied statically
+to scratch copies (awk + diff; the five lint narrowings also pass `go vet`),
+but the controls themselves did not run.
+
+| Finding ID | Commit | Tests |
+| --- | --- | --- |
+| `caller-controlled-signing-gate` (P1) | `bf10a56` | `TestProtectedEnv`, `TestSigningGateHookOrder`, `TestReusableWorkflowGatesBeforeGoReleaser`; `tests/standard-checkout-test.sh`; `tests/engine-test.sh` (`engine-valid-*`, `env-policy-*`, `env-scripts-*`, `earlier-hook-*`, CI job `engine`); narrowing `lint-narrow-hook-order` (`386fa92`) |
+| `signing-xtrace-value-leak` (P1) | `583e04c` | `tests/signing-gate-test.sh` `trace-runner-control-*` and `trace-<runner>-*` (sh -x, bash -x, sourced from traced sh and bash; full, multiline, metachar, each single field, each four-field partial, invalid mode, required absent); mutant `signing-gate-trace-leak` |
+| `notarize-uncovered-build-ids` (P1) | `775d69d` | `TestNotarizeCoverage` (wrong id, subset, extra Darwin build by goos / default goos / targets, unknown id; full coverage, default ids, Linux-only, skipped); narrowing `lint-narrow-notarize-uncovered` (`386fa92`) |
+| `lint-effective-option-override` (P2) | `f9b10c0` | `TestEffectiveBuildSettings` (21 overrides that keep the required tokens, plus a benign-additions positive) |
+| `cosign-token-without-signature` (P2) | `c2359f1` | `TestCosignChecksumSign`; `tests/cosign-sign-test.sh` (`help-effect`, `help-effect-stale-outputs`, each missing output, bad arguments, `signed-arguments-and-outputs`); mutant `cosign-sign-output-bypass` |
+| `non-ssh-signature-optout` (P2) | `ad2f40f` | `tests/tag-gate-test.sh` `pgp-signature`, `pgp-signature-opt-out`, `x509-signature`, `x509-signature-opt-out`, `prohibited-format-opt-out-*-control` |
+| `empty-capture-hides-ambiguity` (P2) | `ad2f40f` | `tests/tag-gate-test.sh` `version-trailing-empty`, `version-trailing-empty-no-newline`, `version-leading-empty`, `version-two-nonempty`, `version-single-empty`, `version-single-valid`, `version-single-valid-no-newline` |
+| `three-lint-rules-without-driving-tests` (P2) | `386fa92` | `TestBuildsAndNfpmsMissing`, `TestSkipUpload`, `TestMain` driven-ID gate over `FindingIDs`; `lint-copy-baseline` and narrowings `lint-narrow-builds-missing`, `lint-narrow-nfpm-missing`, `lint-narrow-skip-upload` |
+| `missing-org-secret-replacement-warning` (P2) | `73351a7` | Documentation only (OWNER-GUIDE section 2, SKILL hard rules); no executable test |
+
+Design of the P1 signing-gate fix: the publish job re-runs the lint, then runs
+`signing-gate.sh` as its own step from the verified standard checkout with
+only `inputs.require_signing` and the five secrets, then
+`standard-checkout-check.sh` compares the checkout's working tree (tracked,
+untracked, ignored, modes) with `job.workflow_sha`'s tree immediately before
+GoReleaser. The lint refuses protected names (`RELEASE_REQUIRE_SIGNING`,
+`RELEASE_STANDARD_SCRIPTS`, the five signing names, `TAP_GITHUB_TOKEN`, and
+also `PATH`, which picks the `sh` and `cosign` the shared scripts run) in
+root, build, before-hook and build-hook env, templated or non-string env
+entries, and any before hook that precedes or replaces the plain gate hook.
+The in-GoReleaser hook stays as defense in depth.
+
+Assumptions about GoReleaser 2.17.0 that the engine job or a real run must
+confirm: `goreleaser build --snapshot` runs `before` hooks and reports a
+failing hook's output; `builds.tool` accepts templates (open item 7, now
+exercised by `engine-valid-unsigned`); signs `args` expand templates and
+`${certificate}`/`${signature}`. The `*-engine-route-live` controls assert
+that today's engine really lets each planted config bypass the in-engine
+hook; if a later engine closes a route, that control fails and should be
+re-evaluated rather than relaxed.
+
+Residual limits: before hooks after the gate, and build hooks, are caller code
+that runs with the job's privileges after admission; the standard bounds what
+runs before the gate and what the config can set, not everything caller code
+can do later. A malformed OpenPGP/X.509 armor line in a tag message is now
+refused as a prohibited format (fail closed).
+
+### Checks that ran (this host, 2026-11-14, head after r2 commits)
+
+| Check | Scope | Result |
+| --- | --- | --- |
+| `sh -n` | `scripts/*.sh` (6) | pass |
+| `bash -n` | `tests/*.sh` (9) | pass |
+| shellcheck 0.11.0 `-x` | scripts and tests | 0 findings |
+| actionlint 1.7.12 (`-config-file .github/actionlint.yaml`) | both workflows and `template/release.yml` | 0 findings |
+| `go build ./...` | Go 1.25.14, `GOTOOLCHAIN=local`, `GOPROXY=off`, `GOFLAGS=-mod=readonly`, scratch HOME and caches | pass |
+| `go vet ./...` | incl. `_test.go` | pass |
+| `gofmt -l` | `cmd/` | clean |
+
+Log: `.temp/checks-r2-01.log` (gitignored). The scratch module cache was seeded
+once from this host's existing module cache through a local `file://` proxy
+(no network); `go.sum` verified the yaml.v3 v3.0.1 zip.
