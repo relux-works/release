@@ -11,7 +11,16 @@ name: Relux Go release
 #
 # Secrets: declared below, all optional. The caller passes `secrets: inherit`;
 # org-level secrets scoped to the caller repository then arrive here without
-# per-repo setup. Secrets reach the GoReleaser step only.
+# per-repo setup. The five signing secrets reach two steps only: the signing
+# presence gate and GoReleaser. TAP_GITHUB_TOKEN reaches GoReleaser only.
+#
+# Signing admission does not depend on the caller config: the presence gate
+# runs as its own step before GoReleaser, from the verified standard checkout,
+# with values from inputs and secrets only. The lint (run again in publish)
+# refuses a config that sets a protected env name or runs a before hook ahead
+# of the standard gate hook, and the checkout tree is checked against
+# job.workflow_sha immediately before GoReleaser. The gate hook inside
+# GoReleaser stays as defense in depth.
 
 on:
   workflow_call:
@@ -275,8 +284,49 @@ jobs:
 
       - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
-      # The before hook (signing-gate.sh) refuses partial or required-but-absent
-      # signing configuration before any build. Only this step gets secrets.
+      # Same lint as admission, on the publish checkout of the same tag commit,
+      # so the config GoReleaser reads below is the one that was checked here.
+      - name: Lint the caller GoReleaser config against the standard
+        working-directory: release-standard
+        env:
+          GOFLAGS: -mod=readonly
+          GOTOOLCHAIN: auto
+          EXPECT_MAIN: ${{ inputs.main_package }}
+          EXPECT_BINARY: ${{ inputs.binary }}
+        run: |
+          go run ./cmd/release-standard-lint \
+            -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
+            "$GITHUB_WORKSPACE/source/.goreleaser.yml"
+
+      # The authoritative signing presence and require_signing policy gate.
+      # It runs from the verified standard checkout with values from the
+      # workflow input and the secrets only; no caller config is read, so
+      # nothing in .goreleaser.yml can relax or redirect it.
+      - name: Signing presence gate
+        env:
+          RELEASE_REQUIRE_SIGNING: ${{ inputs.require_signing }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          "$GITHUB_WORKSPACE/release-standard/scripts/signing-gate.sh"
+
+      # Immediately before GoReleaser: the scripts GoReleaser is pointed at
+      # must still be exactly the tree of job.workflow_sha (no file changed,
+      # added, removed or re-moded since checkout).
+      - name: Confirm the standard scripts are unmodified
+        env:
+          WORKFLOW_SHA: ${{ steps.standard.outputs.sha }}
+        run: |
+          "$GITHUB_WORKSPACE/release-standard/scripts/standard-checkout-check.sh" \
+            "$GITHUB_WORKSPACE/release-standard" "$WORKFLOW_SHA"
+
+      # RELEASE_STANDARD_SCRIPTS and RELEASE_REQUIRE_SIGNING come from this
+      # workflow; the lint above refuses a caller config that sets them, the
+      # signing names, TAP_GITHUB_TOKEN or PATH. The before hook re-runs the
+      # signing gate as defense in depth.
       - name: Build, sign, notarize and publish
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:

@@ -106,6 +106,100 @@ func TestPlantedDrift(t *testing.T) {
 	}
 }
 
+// lintTemplate lints text with placeholders allowed and fails on parse errors.
+func lintTemplate(t *testing.T, text string) []Finding {
+	t.Helper()
+	found, err := LintGoReleaser([]byte(text), Options{AllowPlaceholders: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+const gateHookLine = "    - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n"
+
+// Proves a caller config cannot set any protected name (signing policy,
+// scripts path, the five signing inputs, the tap token, PATH) in root env,
+// build env, before-hook env or build-hook env, nor hide one behind a
+// template or a non-string entry. The positives next to it show unrelated
+// names in the same places are accepted.
+func TestProtectedEnv(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	places := map[string]func(entry string) string{
+		"root env": func(entry string) string {
+			return plant(t, template, "version: 2\n", "version: 2\nenv:\n  - '"+entry+"'\n")
+		},
+		"build env": func(entry string) string {
+			return plant(t, template, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly]", "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, '"+entry+"']")
+		},
+		"before hook env": func(entry string) string {
+			return plant(t, template, gateHookLine, gateHookLine+"    - cmd: 'true'\n      env: ['"+entry+"']\n")
+		},
+		"build hook env": func(entry string) string {
+			return plant(t, template, "    goos: [darwin, linux]\n", "    goos: [darwin, linux]\n    hooks:\n      pre:\n        - cmd: 'true'\n          env: ['"+entry+"']\n")
+		},
+	}
+	for place, build := range places {
+		for _, name := range protectedEnv {
+			t.Run(place+"/"+name, func(t *testing.T) {
+				if found := lintTemplate(t, build(name+"=dummy")); !hasID(found, "protected-env") {
+					t.Fatalf("want protected-env, got %v", ids(found))
+				}
+			})
+		}
+		t.Run(place+"/templated name", func(t *testing.T) {
+			if found := lintTemplate(t, build(`{{ "RELEASE_REQUIRE_SIGNING" }}=false`)); !hasID(found, "protected-env") {
+				t.Fatalf("want protected-env, got %v", ids(found))
+			}
+		})
+		t.Run(place+"/unrelated name control", func(t *testing.T) {
+			if found := lintTemplate(t, build("RELUX_FIXTURE_UNRELATED=1")); len(found) != 0 {
+				t.Fatalf("unrelated env name: unexpected findings %v", found)
+			}
+		})
+	}
+	nonString := plant(t, template, "version: 2\n", "version: 2\nenv:\n  - {RELEASE_REQUIRE_SIGNING: false}\n")
+	if found := lintTemplate(t, nonString); !hasID(found, "protected-env") {
+		t.Fatalf("non-string env entry: want protected-env, got %v", ids(found))
+	}
+}
+
+// Proves the signing gate must be the first before hook in plain form: an
+// earlier hook (here the review's route, rewriting the shared gate before it
+// runs) and a gate hook with its own env or dir are refused, and a gate
+// replaced by another script is reported as missing. The positives show a
+// hook after the gate and the gate in cmd-only map form are accepted.
+func TestSigningGateHookOrder(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	rewrite := "    - sh -c 'printf \"#!/bin/sh\\nexit 0\\n\" > {{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n"
+	cases := []struct {
+		name, text, want string
+	}{
+		{"earlier rewrite hook", plant(t, template, gateHookLine, rewrite+gateHookLine), "signing-gate-hook-order"},
+		{"earlier harmless hook", plant(t, template, gateHookLine, "    - 'true'\n"+gateHookLine), "signing-gate-hook-order"},
+		{"replacement gate", plant(t, template, gateHookLine, "    - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/../fake/signing-gate.sh'\n"), "signing-gate-hook"},
+		{"gate with env", plant(t, template, gateHookLine, "    - cmd: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n      env: [RELUX_FIXTURE_UNRELATED=1]\n"), "signing-gate-hook-order"},
+		{"gate with dir", plant(t, template, gateHookLine, "    - cmd: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n      dir: /tmp\n"), "signing-gate-hook-order"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if found := lintTemplate(t, tc.text); !hasID(found, tc.want) {
+				t.Fatalf("want %s, got %v", tc.want, ids(found))
+			}
+		})
+	}
+	for name, text := range map[string]string{
+		"later hook":    plant(t, template, gateHookLine, gateHookLine+"    - 'true'\n"),
+		"cmd-only gate": plant(t, template, gateHookLine, "    - cmd: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n"),
+	} {
+		t.Run(name+" control", func(t *testing.T) {
+			if found := lintTemplate(t, text); len(found) != 0 {
+				t.Fatalf("unexpected findings %v", found)
+			}
+		})
+	}
+}
+
 // Proves the workflow inputs are cross-checked: a main/binary that the config
 // does not build is a finding, and the matching values are not.
 func TestExpectMainAndBinary(t *testing.T) {

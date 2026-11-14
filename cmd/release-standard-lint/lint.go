@@ -20,7 +20,27 @@ const (
 	notarizeEnable = `{{ isEnvSet "MACOS_SIGN_P12" }}`
 )
 
+// protectedEnv are the names a caller config must never set in root env,
+// build env or hook env. They steer the signing policy, the path of the
+// shared scripts, the five signing inputs and the tap token, all of which the
+// reusable workflow sets from its own inputs and secrets. GoReleaser applies
+// a config's root env over the process env before it expands any hook, so
+// one such entry would redirect or disable the in-GoReleaser gate. PATH is
+// protected too: it decides which sh and cosign the shared scripts run.
+var protectedEnv = []string{
+	"RELEASE_REQUIRE_SIGNING",
+	"RELEASE_STANDARD_SCRIPTS",
+	"MACOS_SIGN_P12",
+	"MACOS_SIGN_P12_PASSWORD",
+	"ASC_ISSUER_ID",
+	"ASC_KEY_ID",
+	"ASC_KEY_P8",
+	"TAP_GITHUB_TOKEN",
+	"PATH",
+}
+
 var (
+	envNameRE      = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	placeholderRE  = regexp.MustCompile(`__[A-Z][A-Z0-9_]*__`)
 	fullSHARE      = regexp.MustCompile(`^[0-9a-f]{40}$`)
 	exactVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
@@ -129,19 +149,8 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("config-version", "version must be 2")
 	}
 
-	hookFound := false
-	for _, h := range asList(asMap(doc["before"])["hooks"]) {
-		cmd := asString(h)
-		if cmd == "" {
-			cmd = asString(asMap(h)["cmd"])
-		}
-		if cmd == signingGate {
-			hookFound = true
-		}
-	}
-	if !hookFound {
-		f.add("signing-gate-hook", "before.hooks must run %s", signingGate)
-	}
+	checkEnv("env", doc["env"], &f)
+	checkBeforeHooks(asList(asMap(doc["before"])["hooks"]), &f)
 
 	builds := asList(doc["builds"])
 	if len(builds) == 0 {
@@ -156,6 +165,12 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		}
 		if opt.ExpectBinary != "" && asString(m["binary"]) == opt.ExpectBinary {
 			binaryFound = true
+		}
+		checkEnv(where+".env", m["env"], &f)
+		for _, phase := range []string{"pre", "post"} {
+			for j, h := range asList(asMap(m["hooks"])[phase]) {
+				checkEnv(fmt.Sprintf("%s.hooks.%s[%d].env", where, phase, j), asMap(h)["env"], &f)
+			}
 		}
 		env := stringList(m["env"])
 		if !contains(env, "CGO_ENABLED=0") {
@@ -262,6 +277,74 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("release-prerelease", "release.prerelease must be auto")
 	}
 	return f, nil
+}
+
+// checkEnv refuses a protected name in a KEY=VALUE env list. A name that is
+// not a plain identifier (for example a template) or an entry that is not a
+// string cannot be checked, so it is refused as well.
+func checkEnv(where string, v any, f *findings) {
+	if v == nil {
+		return
+	}
+	list, ok := v.([]any)
+	if !ok {
+		f.add("protected-env", "%s must be a list of KEY=VALUE strings", where)
+		return
+	}
+	for i, e := range list {
+		s, ok := e.(string)
+		if !ok {
+			f.add("protected-env", "%s[%d] is not a KEY=VALUE string", where, i)
+			continue
+		}
+		name, _, _ := strings.Cut(strings.TrimSpace(s), "=")
+		name = strings.TrimSpace(name)
+		if !envNameRE.MatchString(name) {
+			f.add("protected-env", "%s[%d]: name %q is not a plain identifier", where, i, name)
+			continue
+		}
+		if contains(protectedEnv, name) {
+			f.add("protected-env", "%s[%d] sets %s, which only the reusable workflow may set", where, i, name)
+		}
+	}
+}
+
+// checkBeforeHooks requires the standard signing gate as the first before
+// hook, in plain form: a hook that runs earlier could rewrite the shared
+// scripts or the environment the gate reads, and a gate hook with its own
+// env or dir would no longer be the standard gate. Hook env is checked for
+// protected names in every position.
+func checkBeforeHooks(hooks []any, f *findings) {
+	gateAt := -1
+	for i, h := range hooks {
+		cmd := asString(h)
+		if m := asMap(h); m != nil {
+			cmd = asString(m["cmd"])
+			checkEnv(fmt.Sprintf("before.hooks[%d].env", i), m["env"], f)
+		}
+		if cmd == signingGate && gateAt < 0 {
+			gateAt = i
+		}
+	}
+	switch {
+	case gateAt < 0:
+		f.add("signing-gate-hook", "before.hooks must run %s", signingGate)
+	case gateAt > 0:
+		f.add("signing-gate-hook-order", "before.hooks[0] must be %s; %d hook(s) run before it", signingGate, gateAt)
+	default:
+		if m := asMap(hooks[0]); m != nil {
+			keys := make([]string, 0, len(m))
+			for key := range m {
+				if key != "cmd" {
+					keys = append(keys, key)
+				}
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				f.add("signing-gate-hook-order", "before.hooks[0] must be the plain gate hook, without %s", key)
+			}
+		}
+	}
 }
 
 func notarizeOK(entries []any) bool {

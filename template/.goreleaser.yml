@@ -2,15 +2,20 @@
 #
 # Copy to the caller repository root as .goreleaser.yml, replace every
 # __PLACEHOLDER__, and keep everything else. release-standard-lint checks the
-# result in the release admission job. RELEASE_STANDARD_SCRIPTS is set by the
-# shared go-release.yml; for a local snapshot point it at a checkout of the
-# standard's scripts/ and set RELEASE_REQUIRE_SIGNING=false.
+# result in the release admission job and again before publishing.
+# RELEASE_STANDARD_SCRIPTS and RELEASE_REQUIRE_SIGNING are set by the shared
+# go-release.yml; for a local snapshot export them in the shell (a checkout of
+# the standard's scripts/, and false). Never set them, the five signing
+# names, TAP_GITHUB_TOKEN or PATH in any env list of this file: the lint
+# refuses that (protected-env).
 version: 2
 
 project_name: __BINARY__
 
 # Signing presence gate: no field and require_signing=false builds unsigned,
 # all five fields sign and notarize, anything else fails before any build.
+# go-release.yml runs the same gate as its own step before GoReleaser; this
+# hook is defense in depth and must stay the first before hook, in this form.
 before:
   hooks:
     - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'

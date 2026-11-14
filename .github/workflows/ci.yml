@@ -1,7 +1,8 @@
 name: CI
 
 # Hosted CI is where this repository's tests run: the gate and lint tests,
-# the static checks (sh -n, shellcheck, actionlint, go vet) and the Go tests.
+# the static checks (sh -n, shellcheck, actionlint, go vet), the Go tests and
+# the real-engine GoReleaser controls.
 on:
   pull_request:
   push:
@@ -52,3 +53,27 @@ jobs:
           cache: false
       - name: Gate, lint and harness-control tests
         run: bash tests/run-all.sh
+
+  # Real-engine regression controls: the pinned GoReleaser runs the template
+  # and the caller-config bypass routes (no signing field, no publication).
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install GoReleaser v2.17.0 (same action and pin as go-release.yml)
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          install-only: true
+      - name: Engine tests
+        env:
+          REQUIRE_ENGINE: '1'
+        run: bash tests/engine-test.sh
