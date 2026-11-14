@@ -16,7 +16,8 @@
 #   15 tag_name_mismatch          the tag object's own name differs from the ref
 #   16 signers_file_missing       allowed_signers is not a regular file at the tag commit
 #   17 unsigned_tag               no signature block in the tag object
-#   18 non_ssh_signature          OpenPGP or X.509 signature; only SSH is accepted
+#   18 non_ssh_signature          OpenPGP or X.509 signature block; refused in
+#                                 both modes, also with --require-signed false
 #   19 untrusted_signature        git verify-tag failed against allowed_signers
 #   20 commit_mismatch            the tag commit is not the checked-out HEAD
 #   21 version_source_unreadable  the version source is missing or ambiguous
@@ -141,8 +142,11 @@ head=$(git rev-parse HEAD)
 [ "$commit" = "$head" ] ||
 	refuse 20 commit_mismatch "tag commit $commit is not HEAD $head"
 
+tmp=
+matches_file=
+trap 'rm -f ${tmp:+"$tmp"} ${matches_file:+"$matches_file"}' EXIT
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
+matches_file=$(mktemp)
 
 # Copies a regular file from the tag commit's tree into $tmp, or fails.
 tree_blob() {
@@ -160,38 +164,47 @@ verify_tag_signature() {
 		verify-tag "$1" >/dev/null 2>&1
 }
 
-# 5. SSH signature from a key in the allowlist (OpenPGP and X.509 disabled).
+# 5. Prohibited signature formats are refused in every mode: an OpenPGP or
+# X.509 block is never accepted, not even when unsigned tags are allowed.
+body=$(git cat-file tag "$tag_oid")
+if printf '%s\n' "$body" | grep -Eqx -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
+	refuse 18 non_ssh_signature "$tag carries an OpenPGP or X.509 signature block; only SSH signatures are accepted"
+fi
+
+# 6. SSH signature from a key in the allowlist (OpenPGP and X.509 disabled).
 if [ "$require_signed" = true ]; then
-	body=$(git cat-file tag "$tag_oid")
-	if ! printf '%s\n' "$body" | grep -qx -- '-----BEGIN SSH SIGNATURE-----'; then
-		if printf '%s\n' "$body" | grep -Eqx -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
-			refuse 18 non_ssh_signature "$tag carries an OpenPGP or X.509 signature; only SSH signatures are accepted"
-		fi
+	printf '%s\n' "$body" | grep -qx -- '-----BEGIN SSH SIGNATURE-----' ||
 		refuse 17 unsigned_tag "$tag carries no SSH signature"
-	fi
 	tree_blob "$signers" ||
 		refuse 16 signers_file_missing "$signers is not a regular file at $commit"
 	verify_tag_signature "$tag_oid" ||
 		refuse 19 untrusted_signature "$tag signature does not verify against $signers"
 fi
 
-# 6. Tag equals "v" + the version source (exactly one matching line).
+# 7. Tag equals "v" + the version source (exactly one matching line). sed
+# prints one record per matching line, prefixed with "x" so an empty capture
+# is still a nonempty record (also on a last line without a newline), and the
+# records are counted in a file before any command substitution can strip
+# empty trailing ones.
 tree_blob "$version_file" ||
 	refuse 21 version_source_unreadable "$version_file is not a regular file at $commit"
 d=$(printf '\001')
-matches=$(sed -n -E "s${d}${version_regex}${d}\\1${d}p" "$tmp" 2>/dev/null) ||
+sed -n -E "s${d}${version_regex}${d}x\\1${d}p" "$tmp" >"$matches_file" 2>/dev/null ||
 	refuse 21 version_source_unreadable "version regex is invalid or has no capture group"
-[ -n "$matches" ] ||
-	refuse 21 version_source_unreadable "version regex matches no line of $version_file"
-case $matches in
-*"$nl"*) refuse 21 version_source_unreadable "version regex matches more than one line of $version_file" ;;
+count=$(awk 'END { print NR }' "$matches_file")
+case $count in
+0) refuse 21 version_source_unreadable "version regex matches no line of $version_file" ;;
+1) ;;
+*) refuse 21 version_source_unreadable "version regex matches $count lines of $version_file, want exactly one" ;;
 esac
+matches=$(cat "$matches_file")
+matches=${matches#x}
 printf '%s\n' "$matches" | grep -Eqx "$num\\.$num\\.$num(-rc\\.[1-9][0-9]*)?" ||
 	refuse 21 version_source_unreadable "captured version '$matches' is not X.Y.Z or X.Y.Z-rc.N (anchor the regex with ^ and \$)"
 [ "$tag" = "v$matches" ] ||
 	refuse 22 version_mismatch "tag $tag does not equal v$matches from $version_file"
 
-# 7. Optionally, the tag commit is already on main.
+# 8. Optionally, the tag commit is already on main.
 if [ "$require_on_main" = true ]; then
 	main_oid=$(git rev-parse -q --verify "$main_ref^{commit}" 2>/dev/null) ||
 		refuse 23 main_ref_missing "$main_ref does not resolve to a commit"

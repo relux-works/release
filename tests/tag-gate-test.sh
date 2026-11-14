@@ -124,12 +124,32 @@ git update-ref refs/tags/v1.2.3 "$tampered"
 expect_refusal tampered-signature 19 untrusted_signature --tag v1.2.3
 pair_control tampered-signature
 
-# Proves an OpenPGP-style signature block is refused by name, not tried.
-pgp=$(printf 'object %s\ntype commit\ntag v1.2.3\ntagger Fixture <fixture@example.invalid> 1700000000 +0000\n\nRelease v1.2.3\n-----BEGIN PGP SIGNATURE-----\n\nZml4dHVyZQ==\n-----END PGP SIGNATURE-----\n' \
-	"$(git rev-parse HEAD)" | git hash-object -t tag -w --stdin)
-git update-ref refs/tags/v1.2.3 "$pgp"
+# synthetic_tag BEGIN_LINE END_LINE: writes a tag object for HEAD named
+# v1.2.3 whose signature block uses the given armor lines, and points the ref
+# at it. The block is synthetic; no OpenPGP or X.509 key is involved.
+synthetic_tag() {
+	local oid
+	oid=$(printf 'object %s\ntype commit\ntag v1.2.3\ntagger Fixture <fixture@example.invalid> 1700000000 +0000\n\nRelease v1.2.3\n%s\n\nZml4dHVyZQ==\n%s\n' \
+		"$(git rev-parse HEAD)" "$1" "$2" | git hash-object -t tag -w --stdin)
+	git update-ref refs/tags/v1.2.3 "$oid"
+}
+
+# Proves OpenPGP and X.509 signature blocks are refused by name in both
+# modes: required signatures, and the documented unsigned-tag opt-out, which
+# permits an absent signature but never a prohibited format. The opt-out
+# positives next to them (an unsigned annotated tag and a trusted SSH-signed
+# tag with --require-signed false) show the opt-out itself still works.
+synthetic_tag '-----BEGIN PGP SIGNATURE-----' '-----END PGP SIGNATURE-----'
 expect_refusal pgp-signature 18 non_ssh_signature --tag v1.2.3
-pair_control pgp-signature
+expect_refusal pgp-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
+synthetic_tag '-----BEGIN SIGNED MESSAGE-----' '-----END SIGNED MESSAGE-----'
+expect_refusal x509-signature 18 non_ssh_signature --tag v1.2.3
+expect_refusal x509-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
+make_tag v1.2.3 annotated
+expect_accept prohibited-format-opt-out-unsigned-control --tag v1.2.3 --require-signed false
+make_tag v1.2.3 signed
+expect_accept prohibited-format-opt-out-ssh-control --tag v1.2.3 --require-signed false
+pair_control prohibited-formats
 
 # Proves a lightweight tag is refused, also when signatures are not required.
 make_tag v1.2.3 lightweight
@@ -187,6 +207,36 @@ expect_refusal regex-no-match 21 version_source_unreadable --tag v1.2.3 --versio
 expect_refusal regex-no-group 21 version_source_unreadable --tag v1.2.3 --version-regex '^var buildVersion'
 expect_refusal regex-unanchored 21 version_source_unreadable --tag v1.2.3 --version-regex 'buildVersion = "([^"]*)"'
 pair_control paths
+
+# set_version_source CONTENT: commits CONTENT (printf format, no arguments)
+# as version.go, moves the stand-in origin/main to it and tags it signed.
+set_version_source() {
+	# shellcheck disable=SC2059 # CONTENT is a fixed fixture format
+	printf "$1" >version.go
+	git commit -q -am "Fixture version source variant"
+	git update-ref refs/remotes/origin/main HEAD
+	make_tag v1.2.3 signed
+}
+
+# Proves the version source must match exactly one line, counted
+# independently of the captured contents: an empty capture after the valid
+# one (also on a last line without a newline), an empty capture before it,
+# and two nonempty captures are each refused, while a single valid line in
+# the same layout is accepted.
+set_version_source 'package main\n\nvar buildVersion = "1.2.3"\nvar buildVersion = ""\n'
+expect_refusal version-trailing-empty 21 version_source_unreadable --tag v1.2.3
+set_version_source 'package main\n\nvar buildVersion = "1.2.3"\nvar buildVersion = ""'
+expect_refusal version-trailing-empty-no-newline 21 version_source_unreadable --tag v1.2.3
+set_version_source 'package main\n\nvar buildVersion = ""\nvar buildVersion = "1.2.3"\n'
+expect_refusal version-leading-empty 21 version_source_unreadable --tag v1.2.3
+set_version_source 'package main\n\nvar buildVersion = "1.2.3"\nvar buildVersion = "1.2.3"\n'
+expect_refusal version-two-nonempty 21 version_source_unreadable --tag v1.2.3
+set_version_source 'package main\n\nvar buildVersion = ""\n'
+expect_refusal version-single-empty 21 version_source_unreadable --tag v1.2.3
+set_version_source 'package main\n\nvar other = ""\nvar buildVersion = "1.2.3"'
+expect_accept version-single-valid-no-newline --tag v1.2.3
+set_version_source 'package main\n\nvar buildVersion = "1.2.3"\n'
+expect_accept version-single-valid --tag v1.2.3
 
 # Proves a -rc.N tag is refused unless the caller allows prereleases, and
 # that an allowed, signed, matching prerelease passes.
