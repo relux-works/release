@@ -315,6 +315,58 @@ func TestEffectiveBuildSettings(t *testing.T) {
 	}
 }
 
+// Proves the checksum signing entry must be the standard wrapper entry that
+// emits and checks both verification files: the review's token-preserving
+// no-op (cosign sign-blob --help), direct cosign, an extra or missing
+// wrapper argument, other certificate or signature names, a filter key, a
+// second entry over all artifacts, a duplicate standard entry and an entry
+// not over the checksum are refused. The positives show an explicit default
+// signature name and an unrelated archive signing entry are accepted.
+func TestCosignChecksumSign(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	const entry = `  - cmd: sh
+    certificate: '${artifact}.pem'
+    args:
+      - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/cosign-sign-checksum.sh'
+      - '${artifact}'
+      - '${certificate}'
+      - '${signature}'
+    artifacts: checksum
+    output: true
+`
+	replace := func(old, replacement string) string { return plant(t, template, old, replacement) }
+	negative := map[string]string{
+		"help no-op":         replace(entry, "  - cmd: cosign\n    artifacts: checksum\n    args: [sign-blob, --help]\n"),
+		"direct cosign":      replace(entry, "  - cmd: cosign\n    certificate: '${artifact}.pem'\n    args: [sign-blob, '--output-certificate=${certificate}', '--output-signature=${signature}', '${artifact}', --yes]\n    artifacts: checksum\n"),
+		"extra help arg":     replace("      - '${signature}'\n", "      - '${signature}'\n      - --help\n"),
+		"missing signature":  replace("      - '${signature}'\n", ""),
+		"other certificate":  replace("    certificate: '${artifact}.pem'\n    args:\n      - '{{", "    certificate: '${artifact}.crt'\n    args:\n      - '{{"),
+		"other signature":    replace("    artifacts: checksum\n    output: true\n", "    artifacts: checksum\n    signature: '${artifact}.asc'\n    output: true\n"),
+		"filter key":         replace("    artifacts: checksum\n    output: true\n", "    artifacts: checksum\n    if: 'false'\n    output: true\n"),
+		"second all entry":   replace(entry, entry+"  - cmd: gpg\n    artifacts: all\n"),
+		"duplicate standard": replace(entry, entry+entry),
+		"not over checksum":  replace("    artifacts: checksum\n    output: true\n", "    artifacts: none\n    output: true\n"),
+	}
+	for name, text := range negative {
+		t.Run(name, func(t *testing.T) {
+			if found := lintTemplate(t, text); !hasID(found, "cosign-checksum-sign") {
+				t.Fatalf("want cosign-checksum-sign, got %v", ids(found))
+			}
+		})
+	}
+	positive := map[string]string{
+		"explicit default signature": replace("    artifacts: checksum\n    output: true\n", "    artifacts: checksum\n    signature: '${artifact}.sig'\n    output: true\n"),
+		"unrelated archive signing":  replace(entry, entry+"  - cmd: 'true'\n    artifacts: archive\n"),
+	}
+	for name, text := range positive {
+		t.Run(name+" control", func(t *testing.T) {
+			if found := lintTemplate(t, text); len(found) != 0 {
+				t.Fatalf("unexpected findings %v", found)
+			}
+		})
+	}
+}
+
 // Proves the workflow inputs are cross-checked: a main/binary that the config
 // does not build is a finding, and the matching values are not.
 func TestExpectMainAndBinary(t *testing.T) {

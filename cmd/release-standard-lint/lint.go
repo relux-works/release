@@ -17,6 +17,7 @@ const (
 	scriptsPrefix  = "{{ .Env.RELEASE_STANDARD_SCRIPTS }}/"
 	toolchainHook  = scriptsPrefix + "go-toolchain.sh"
 	signingGate    = scriptsPrefix + "signing-gate.sh"
+	cosignWrapper  = scriptsPrefix + "cosign-sign-checksum.sh"
 	notarizeEnable = `{{ isEnvSet "MACOS_SIGN_P12" }}`
 )
 
@@ -219,17 +220,7 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("checksum-name", "checksum must be enabled with name_template checksums.txt")
 	}
 
-	cosignFound := false
-	for _, s := range asList(doc["signs"]) {
-		m := asMap(s)
-		if asString(m["cmd"]) == "cosign" && asString(m["artifacts"]) == "checksum" &&
-			contains(stringList(m["args"]), "sign-blob") {
-			cosignFound = true
-		}
-	}
-	if !cosignFound {
-		f.add("cosign-checksum-sign", "signs must run cosign sign-blob over artifacts: checksum")
-	}
+	checkSigns(asList(doc["signs"]), &f)
 
 	sbomFound := false
 	for _, s := range asList(doc["sboms"]) {
@@ -374,6 +365,64 @@ func checkLdflags(where string, ldflags []string, f *findings) {
 		if got := counts[rule.name]; len(got) != 1 || got[0] != rule.want {
 			f.add("build-ldflags", "%s: ldflags must contain %s exactly once and no other %s setting, got %q", where, rule.want, rule.name, got)
 		}
+	}
+}
+
+// standardSignArgs are the exact args of the standard signs entry: the
+// shared wrapper owns the cosign command line and checks its outputs.
+var standardSignArgs = []string{cosignWrapper, "${artifact}", "${certificate}", "${signature}"}
+
+// standardSignKeys are the keys the standard signs entry may carry.
+var standardSignKeys = []string{"id", "cmd", "args", "artifacts", "certificate", "signature", "output"}
+
+// isStandardSign reports whether a signs entry is exactly the standard one.
+func isStandardSign(m map[string]any) bool {
+	for key := range m {
+		if !contains(standardSignKeys, key) {
+			return false
+		}
+	}
+	if _, ok := m["output"]; ok {
+		if _, isBool := m["output"].(bool); !isBool {
+			return false
+		}
+	}
+	args := asList(m["args"])
+	if len(args) != len(standardSignArgs) {
+		return false
+	}
+	for i, a := range args {
+		if s, ok := a.(string); !ok || strings.TrimSpace(s) != standardSignArgs[i] {
+			return false
+		}
+	}
+	signature, hasSignature := m["signature"]
+	return asString(m["cmd"]) == "sh" &&
+		asString(m["artifacts"]) == "checksum" &&
+		asString(m["certificate"]) == "${artifact}.pem" &&
+		(!hasSignature || asString(signature) == "${artifact}.sig")
+}
+
+// checkSigns requires exactly one standard signs entry, and refuses any other
+// entry that would also sign the checksum file (artifacts checksum or all),
+// since it could replace or shadow checksums.txt.sig and .pem.
+func checkSigns(signs []any, f *findings) {
+	standard := 0
+	for i, s := range signs {
+		m := asMap(s)
+		switch asString(m["artifacts"]) {
+		case "checksum", "all":
+		default:
+			continue
+		}
+		if isStandardSign(m) {
+			standard++
+			continue
+		}
+		f.add("cosign-checksum-sign", "signs[%d] signs the checksum file but is not the standard entry (cmd sh, args %v, certificate ${artifact}.pem)", i, standardSignArgs)
+	}
+	if standard != 1 {
+		f.add("cosign-checksum-sign", "signs must contain exactly one standard entry over artifacts: checksum running %s, found %d", cosignWrapper, standard)
 	}
 }
 

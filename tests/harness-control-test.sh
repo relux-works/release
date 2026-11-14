@@ -84,4 +84,17 @@ else
 	fail signing-gate-trace-leak 'plant did not apply to scripts/signing-gate.sh'
 fi
 
+# Proves cosign-sign-test.sh catches a wrapper that trusts cosign's exit
+# code: the mutant skips the certificate check, so the help-effect case
+# (cosign succeeds without signing) must fail against it.
+cosign_mutant="$SCRATCH/mutants/cosign-sign-checksum.sh"
+# shellcheck disable=SC2016 # literal $ in the planted lines
+if plant_literal "$REPO_ROOT/scripts/cosign-sign-checksum.sh" "$cosign_mutant" \
+	'[ -s "$certificate" ] || refuse 42 certificate_missing "cosign wrote no certificate $certificate"' \
+	':'; then
+	control cosign-sign-output-bypass cosign-sign-test.sh COSIGN_SIGN "$cosign_mutant" 'help-effect:'
+else
+	fail cosign-sign-output-bypass 'plant did not apply to scripts/cosign-sign-checksum.sh'
+fi
+
 finish harness-control-test

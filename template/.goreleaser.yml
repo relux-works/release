@@ -81,15 +81,16 @@ notarize:
         timeout: 20m
 
 # Keyless cosign over checksums.txt; verifying it covers every listed asset.
+# The shared wrapper owns the cosign arguments and refuses unless cosign wrote
+# checksums.txt.pem and checksums.txt.sig, before anything is published.
 signs:
-  - cmd: cosign
+  - cmd: sh
     certificate: '${artifact}.pem'
     args:
-      - sign-blob
-      - '--output-certificate=${certificate}'
-      - '--output-signature=${signature}'
+      - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/cosign-sign-checksum.sh'
       - '${artifact}'
-      - --yes
+      - '${certificate}'
+      - '${signature}'
     artifacts: checksum
     output: true
 
