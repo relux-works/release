@@ -207,9 +207,7 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("build-binary-mismatch", "no build has binary %q (workflow input binary)", opt.ExpectBinary)
 	}
 
-	if !notarizeOK(asList(asMap(doc["notarize"])["macos"])) {
-		f.add("notarize-missing", "notarize.macos needs an entry enabled by %s that signs with MACOS_SIGN_P12/MACOS_SIGN_P12_PASSWORD and notarizes with ASC_ISSUER_ID/ASC_KEY_ID/ASC_KEY_P8 and wait: true", notarizeEnable)
-	}
+	checkNotarize(doc, builds, &f)
 
 	nfpms := asList(doc["nfpms"])
 	if len(nfpms) == 0 {
@@ -347,23 +345,107 @@ func checkBeforeHooks(hooks []any, f *findings) {
 	}
 }
 
-func notarizeOK(entries []any) bool {
-	for _, e := range entries {
-		m := asMap(e)
-		sign := asMap(m["sign"])
-		notarize := asMap(m["notarize"])
-		wait, _ := notarize["wait"].(bool)
-		if asString(m["enabled"]) == notarizeEnable &&
-			asString(sign["certificate"]) == "{{ .Env.MACOS_SIGN_P12 }}" &&
-			asString(sign["password"]) == "{{ .Env.MACOS_SIGN_P12_PASSWORD }}" &&
-			asString(notarize["issuer_id"]) == "{{ .Env.ASC_ISSUER_ID }}" &&
-			asString(notarize["key_id"]) == "{{ .Env.ASC_KEY_ID }}" &&
-			asString(notarize["key"]) == "{{ .Env.ASC_KEY_P8 }}" &&
-			wait {
+// notarizeWired reports whether one notarize.macos entry is enabled by the
+// signing presence and signs and notarizes with the five standard inputs,
+// waiting for Apple's verdict.
+func notarizeWired(m map[string]any) bool {
+	sign := asMap(m["sign"])
+	notarize := asMap(m["notarize"])
+	wait, _ := notarize["wait"].(bool)
+	return asString(m["enabled"]) == notarizeEnable &&
+		asString(sign["certificate"]) == "{{ .Env.MACOS_SIGN_P12 }}" &&
+		asString(sign["password"]) == "{{ .Env.MACOS_SIGN_P12_PASSWORD }}" &&
+		asString(notarize["issuer_id"]) == "{{ .Env.ASC_ISSUER_ID }}" &&
+		asString(notarize["key_id"]) == "{{ .Env.ASC_KEY_ID }}" &&
+		asString(notarize["key"]) == "{{ .Env.ASC_KEY_P8 }}" &&
+		wait
+}
+
+// projectName is the config's project_name, or a symbol standing for the
+// name GoReleaser derives when it is absent. Build ids and notarize ids both
+// default to it, so the symbol compares correctly between them.
+func projectName(doc map[string]any) string {
+	if name := asString(doc["project_name"]); name != "" {
+		return name
+	}
+	return "<project_name>"
+}
+
+// buildID is a build's id, defaulting to the project name as GoReleaser does.
+func buildID(m map[string]any, project string) string {
+	if id := asString(m["id"]); id != "" {
+		return id
+	}
+	return project
+}
+
+// releasesDarwin reports whether a build can produce a Darwin binary. It
+// fails closed: absent goos (GoReleaser's default includes darwin), a
+// templated value, or a special target list such as go_first_class count as
+// Darwin. Only a literal skip: true removes a build.
+func releasesDarwin(m map[string]any) bool {
+	if skip, ok := m["skip"].(bool); ok && skip {
+		return false
+	}
+	if targets := stringList(m["targets"]); len(targets) > 0 {
+		for _, target := range targets {
+			if strings.HasPrefix(target, "darwin_") || strings.HasPrefix(target, "go_") || strings.Contains(target, "{{") {
+				return true
+			}
+		}
+		return false
+	}
+	goos := stringList(m["goos"])
+	if len(goos) == 0 {
+		return true
+	}
+	for _, g := range goos {
+		if g == "darwin" || strings.Contains(g, "{{") {
 			return true
 		}
 	}
 	return false
+}
+
+// checkNotarize requires every notarize.macos entry to be wired to the five
+// standard inputs, and every releasable Darwin build id to be selected by a
+// wired entry. GoReleaser notarizes only the builds an entry's ids select
+// (default: the project name) and skips an empty selection, so an entry that
+// names a wrong or partial id set would ship the other Darwin builds unsigned.
+func checkNotarize(doc map[string]any, builds []any, f *findings) {
+	project := projectName(doc)
+	entries := asList(asMap(doc["notarize"])["macos"])
+	if len(entries) == 0 {
+		f.add("notarize-missing", "notarize.macos needs an entry enabled by %s that signs with MACOS_SIGN_P12/MACOS_SIGN_P12_PASSWORD and notarizes with ASC_ISSUER_ID/ASC_KEY_ID/ASC_KEY_P8 and wait: true", notarizeEnable)
+	}
+	buildIDs := map[string]bool{}
+	for _, b := range builds {
+		buildIDs[buildID(asMap(b), project)] = true
+	}
+	covered := map[string]bool{}
+	for i, e := range entries {
+		m := asMap(e)
+		if !notarizeWired(m) {
+			f.add("notarize-missing", "notarize.macos[%d] must be enabled by %s, sign with MACOS_SIGN_P12/MACOS_SIGN_P12_PASSWORD, notarize with ASC_ISSUER_ID/ASC_KEY_ID/ASC_KEY_P8 and wait: true", i, notarizeEnable)
+			continue
+		}
+		selected := stringList(m["ids"])
+		if len(selected) == 0 {
+			selected = []string{project}
+		}
+		for _, id := range selected {
+			if !buildIDs[id] {
+				f.add("notarize-uncovered", "notarize.macos[%d].ids names %q, which is not a build id", i, id)
+			}
+			covered[id] = true
+		}
+	}
+	for i, b := range builds {
+		m := asMap(b)
+		if id := buildID(m, project); releasesDarwin(m) && !covered[id] {
+			f.add("notarize-uncovered", "builds[%d] (id %q) can produce a Darwin binary but no wired notarize.macos entry selects it", i, id)
+		}
+	}
 }
 
 // LintWorkflow checks a caller release workflow: it must call the shared

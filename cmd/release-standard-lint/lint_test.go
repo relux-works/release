@@ -200,6 +200,70 @@ func TestSigningGateHookOrder(t *testing.T) {
 	}
 }
 
+const secondDarwinBuild = `  - id: second
+    main: __MAIN_PACKAGE__
+    binary: second
+    tool: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/go-toolchain.sh'
+    env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly]
+    __GOOS__
+    goarch: [arm64]
+    flags: [-trimpath, -buildvcs=false]
+    ldflags:
+      - -s -w -buildid=
+
+archives:
+`
+
+// withSecondBuild adds a second build whose target line is goos (for
+// example "goos: [darwin]") and, when ids is not empty, sets notarize ids.
+func withSecondBuild(t *testing.T, template, goos, ids string) string {
+	t.Helper()
+	text := plant(t, template, "\narchives:\n", "\n"+strings.Replace(secondDarwinBuild, "__GOOS__", goos, 1))
+	if ids != "" {
+		text = plant(t, text, "      ids: [__BINARY__]\n      sign:", "      ids: "+ids+"\n      sign:")
+	}
+	return text
+}
+
+// Proves notarization must select every releasable Darwin build: a wrong
+// id, a subset of the Darwin builds, an extra Darwin build (by goos, by
+// default goos and by targets) and an id that names no build are each
+// refused as notarize-uncovered. The positives show full coverage, default
+// ids resolving to the project name, a Linux-only extra build and a skipped
+// Darwin build are accepted.
+func TestNotarizeCoverage(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	negative := map[string]string{
+		"wrong id":             plant(t, template, "      ids: [__BINARY__]\n      sign:", "      ids: [nonexistent]\n      sign:"),
+		"subset of ids":        withSecondBuild(t, template, "goos: [darwin]", "[__BINARY__]"),
+		"extra darwin build":   withSecondBuild(t, template, "goos: [darwin]", ""),
+		"extra default goos":   withSecondBuild(t, template, "# goos defaults", ""),
+		"extra darwin targets": withSecondBuild(t, template, "targets: [darwin_arm64]", ""),
+		"unknown extra id":     plant(t, template, "      ids: [__BINARY__]\n      sign:", "      ids: [__BINARY__, ghost]\n      sign:"),
+	}
+	for name, text := range negative {
+		t.Run(name, func(t *testing.T) {
+			if found := lintTemplate(t, text); !hasID(found, "notarize-uncovered") {
+				t.Fatalf("want notarize-uncovered, got %v", ids(found))
+			}
+		})
+	}
+	positive := map[string]string{
+		"full coverage":      withSecondBuild(t, template, "goos: [darwin]", "[__BINARY__, second]"),
+		"default ids":        plant(t, template, "      ids: [__BINARY__]\n      sign:", "      sign:"),
+		"linux-only extra":   withSecondBuild(t, template, "goos: [linux]", ""),
+		"skipped darwin":     withSecondBuild(t, template, "goos: [darwin]\n    skip: true", ""),
+		"linux-only targets": withSecondBuild(t, template, "targets: [linux_arm64]", ""),
+	}
+	for name, text := range positive {
+		t.Run(name+" control", func(t *testing.T) {
+			if found := lintTemplate(t, text); len(found) != 0 {
+				t.Fatalf("unexpected findings %v", found)
+			}
+		})
+	}
+}
+
 // Proves the workflow inputs are cross-checked: a main/binary that the config
 // does not build is a finding, and the matching values are not.
 func TestExpectMainAndBinary(t *testing.T) {
