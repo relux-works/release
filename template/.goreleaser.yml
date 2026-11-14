@@ -7,8 +7,13 @@
 # RELEASE_STANDARD_SCRIPTS and RELEASE_REQUIRE_SIGNING are set by the shared
 # go-release.yml; for a local snapshot export them in the shell (a checkout of
 # the standard's scripts/, and false). Never set them, the five signing
-# names, TAP_GITHUB_TOKEN or PATH in any env list of this file: the lint
-# refuses that (protected-env).
+# names, TAP_GITHUB_TOKEN, PATH or a Go toolchain setting (GO*, except
+# GOFLAGS in build env) in any env list of this file, and write env entries,
+# flags and ids without surrounding whitespace: the lint refuses that.
+# Do not add anything that runs your own commands during the release: other
+# before hooks, build hooks, more signs entries, binary_signs, docker_signs,
+# publishers, upx, SBOM commands or -toolexec (caller-hook). They would run
+# after the signing gate with write access to the shared scripts.
 version: 2
 
 project_name: __BINARY__
@@ -16,7 +21,7 @@ project_name: __BINARY__
 # Signing presence gate: no field and require_signing=false builds unsigned,
 # all five fields sign and notarize, anything else fails before any build.
 # go-release.yml runs the same gate as its own step before GoReleaser; this
-# hook is defense in depth and must stay the first before hook, in this form.
+# hook is defense in depth and must stay the only before hook, in this form.
 before:
   hooks:
     - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'

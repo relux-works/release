@@ -154,8 +154,11 @@ const gateHookLine = "    - '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh
 // Proves a caller config cannot set any protected name (signing policy,
 // scripts path, the five signing inputs, the tap token, PATH) in root env,
 // build env, before-hook env or build-hook env, nor hide one behind a
-// template or a non-string entry. The positives next to it show unrelated
-// names in the same places are accepted.
+// template, a non-string entry or whitespace around the name. A Go toolchain
+// setting (GOTOOLCHAIN, GOPROXY, GOSUMDB, ...) is refused in every env list,
+// with GOFLAGS allowed only in build env. The positives show unrelated names
+// in root and build env are accepted; the hook places are refused anyway
+// (caller-hook, see TestCallerHooksRefused), so they get no positive here.
 func TestProtectedEnv(t *testing.T) {
 	template := readTemplate(t, ".goreleaser.yml")
 	places := map[string]func(entry string) string{
@@ -185,11 +188,32 @@ func TestProtectedEnv(t *testing.T) {
 				t.Fatalf("want protected-env, got %v", ids(found))
 			}
 		})
+		for _, name := range []string{"GOTOOLCHAIN", "GOPROXY", "GOSUMDB", "GONOSUMDB", "GOROOT", "GOENV"} {
+			t.Run(place+"/"+name, func(t *testing.T) {
+				if found := lintTemplate(t, build(name+"=dummy")); !hasID(found, "protected-env") {
+					t.Fatalf("want protected-env, got %v", ids(found))
+				}
+			})
+		}
+		for _, entry := range []string{" RELEASE_REQUIRE_SIGNING=false", "RELEASE_REQUIRE_SIGNING =false"} {
+			t.Run(place+"/padded name "+strings.TrimSpace(entry), func(t *testing.T) {
+				if found := lintTemplate(t, build(entry)); !hasID(found, "protected-env") {
+					t.Fatalf("want protected-env, got %v", ids(found))
+				}
+			})
+		}
+		if place != "root env" && place != "build env" {
+			continue
+		}
 		t.Run(place+"/unrelated name control", func(t *testing.T) {
 			if found := lintTemplate(t, build("RELUX_FIXTURE_UNRELATED=1")); len(found) != 0 {
 				t.Fatalf("unrelated env name: unexpected findings %v", found)
 			}
 		})
+	}
+	rootGoflags := plant(t, template, "version: 2\n", "version: 2\nenv:\n  - GOFLAGS=-mod=mod\n")
+	if found := lintTemplate(t, rootGoflags); !hasID(found, "protected-env") {
+		t.Fatalf("root GOFLAGS: want protected-env, got %v", ids(found))
 	}
 	nonString := plant(t, template, "version: 2\n", "version: 2\nenv:\n  - {RELEASE_REQUIRE_SIGNING: false}\n")
 	if found := lintTemplate(t, nonString); !hasID(found, "protected-env") {
@@ -200,8 +224,9 @@ func TestProtectedEnv(t *testing.T) {
 // Proves the signing gate must be the first before hook in plain form: an
 // earlier hook (here the review's route, rewriting the shared gate before it
 // runs) and a gate hook with its own env or dir are refused, and a gate
-// replaced by another script is reported as missing. The positives show a
-// hook after the gate and the gate in cmd-only map form are accepted.
+// replaced by another script is reported as missing. A hook after the gate
+// is refused as caller-hook (TestCallerHooksRefused); the positive shows the
+// gate in cmd-only map form is accepted.
 func TestSigningGateHookOrder(t *testing.T) {
 	template := readTemplate(t, ".goreleaser.yml")
 	rewrite := "    - sh -c 'printf \"#!/bin/sh\\nexit 0\\n\" > {{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n"
@@ -222,7 +247,6 @@ func TestSigningGateHookOrder(t *testing.T) {
 		})
 	}
 	for name, text := range map[string]string{
-		"later hook":    plant(t, template, gateHookLine, gateHookLine+"    - 'true'\n"),
 		"cmd-only gate": plant(t, template, gateHookLine, "    - cmd: '{{ .Env.RELEASE_STANDARD_SCRIPTS }}/signing-gate.sh'\n"),
 	} {
 		t.Run(name+" control", func(t *testing.T) {
@@ -260,7 +284,9 @@ func withSecondBuild(t *testing.T, template, goos, ids string) string {
 
 // Proves notarization must select every releasable Darwin build: a wrong
 // id, a subset of the Darwin builds, an extra Darwin build (by goos, by
-// default goos and by targets) and an id that names no build are each
+// default goos and by targets), an id that names no build, and ids padded
+// with whitespace (r2: GoReleaser matches the exact string, so ' tool'
+// selects nothing) in notarize ids, build ids or project_name are each
 // refused as notarize-uncovered. The positives show full coverage, default
 // ids resolving to the project name, a Linux-only extra build and a skipped
 // Darwin build are accepted.
@@ -273,6 +299,10 @@ func TestNotarizeCoverage(t *testing.T) {
 		"extra default goos":   withSecondBuild(t, template, "# goos defaults", ""),
 		"extra darwin targets": withSecondBuild(t, template, "targets: [darwin_arm64]", ""),
 		"unknown extra id":     plant(t, template, "      ids: [__BINARY__]\n      sign:", "      ids: [__BINARY__, ghost]\n      sign:"),
+		"leading space id":     plant(t, template, "      ids: [__BINARY__]\n      sign:", "      ids: [' __BINARY__']\n      sign:"),
+		"trailing space id":    plant(t, template, "      ids: [__BINARY__]\n      sign:", "      ids: ['__BINARY__ ']\n      sign:"),
+		"padded build id":      plant(t, plant(t, template, "  - id: __BINARY__\n", "  - id: '__BINARY__ '\n"), "      ids: [__BINARY__]\n      sign:", "      ids: ['__BINARY__ ']\n      sign:"),
+		"padded project name":  plant(t, plant(t, template, "project_name: __BINARY__\n", "project_name: ' __BINARY__'\n"), "      ids: [__BINARY__]\n      sign:", "      sign:"),
 	}
 	for name, text := range negative {
 		t.Run(name, func(t *testing.T) {
@@ -300,8 +330,9 @@ func TestNotarizeCoverage(t *testing.T) {
 // Proves the lint checks the effective build settings, not token presence:
 // each case keeps the required tokens and adds a later assignment or option
 // that would override them in the real build (the review's CGO_ENABLED=1,
-// VCS stamping and non-empty build id among them), and must fire the named
-// rule. The positive shows unrelated env, flags and -X values next to the
+// VCS stamping and non-empty build id among them), or alters the exact
+// KEY=VALUE or flag bytes with whitespace (r2: 'CGO_ENABLED=0 ' builds with
+// cgo), and must fire the named rule. The positive shows unrelated env, flags and -X values next to the
 // standard ones are accepted, so the rules do not reject any addition.
 func TestEffectiveBuildSettings(t *testing.T) {
 	const (
@@ -311,6 +342,15 @@ func TestEffectiveBuildSettings(t *testing.T) {
 	)
 	template := readTemplate(t, ".goreleaser.yml")
 	cases := []struct{ name, old, replacement, want string }{
+		{"cgo value trailing space", envLine, "env: ['CGO_ENABLED=0 ', GOFLAGS=-mod=readonly]", "build-cgo-enabled"},
+		{"cgo value trailing tab", envLine, "env: [\"CGO_ENABLED=0\\t\", GOFLAGS=-mod=readonly]", "build-cgo-enabled"},
+		{"cgo value leading space", envLine, "env: ['CGO_ENABLED= 0', GOFLAGS=-mod=readonly]", "build-cgo-enabled"},
+		{"cgo name trailing space", envLine, "env: ['CGO_ENABLED =0', GOFLAGS=-mod=readonly]", "build-cgo-enabled"},
+		{"cgo name leading space", envLine, "env: [' CGO_ENABLED=0', GOFLAGS=-mod=readonly]", "build-cgo-enabled"},
+		{"goflags value trailing space", envLine, "env: [CGO_ENABLED=0, 'GOFLAGS=-mod=readonly ']", "build-mod-readonly"},
+		{"goflags value leading space", envLine, "env: [CGO_ENABLED=0, 'GOFLAGS= -mod=readonly']", "build-mod-readonly"},
+		{"trimpath padded", flagsLine, "flags: ['-trimpath ', -buildvcs=false]", "build-trimpath"},
+		{"buildvcs padded", flagsLine, "flags: [-trimpath, ' -buildvcs=false']", "build-buildvcs"},
 		{"cgo override", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, CGO_ENABLED=1]", "build-cgo-enabled"},
 		{"cgo duplicate", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, CGO_ENABLED=0]", "build-cgo-enabled"},
 		{"goflags override", envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, GOFLAGS=-mod=mod]", "build-mod-readonly"},
@@ -340,7 +380,7 @@ func TestEffectiveBuildSettings(t *testing.T) {
 			}
 		})
 	}
-	benign := plant(t, template, envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, GOPRIVATE=example.invalid]")
+	benign := plant(t, template, envLine, "env: [CGO_ENABLED=0, GOFLAGS=-mod=readonly, RELUX_FIXTURE_BENIGN=1]")
 	benign = plant(t, benign, flagsLine, "flags: [-trimpath, -buildvcs=false, -tags=netgo, -mod=readonly]")
 	benign = plant(t, benign, ldLine, ldLine+" -X main.commit={{ .Commit }} -X=main.date={{ .Date }}")
 	if found := lintTemplate(t, benign); len(found) != 0 {
@@ -353,8 +393,9 @@ func TestEffectiveBuildSettings(t *testing.T) {
 // no-op (cosign sign-blob --help), direct cosign, an extra or missing
 // wrapper argument, other certificate or signature names, a filter key, a
 // second entry over all artifacts, a duplicate standard entry and an entry
-// not over the checksum are refused. The positives show an explicit default
-// signature name and an unrelated archive signing entry are accepted.
+// not over the checksum are refused. An entry over other artifacts is
+// refused as caller-hook (TestCallerHooksRefused). The positive shows an
+// explicit default signature name is accepted.
 func TestCosignChecksumSign(t *testing.T) {
 	template := readTemplate(t, ".goreleaser.yml")
 	const entry = `  - cmd: sh
@@ -389,7 +430,6 @@ func TestCosignChecksumSign(t *testing.T) {
 	}
 	positive := map[string]string{
 		"explicit default signature": replace("    artifacts: checksum\n    output: true\n", "    artifacts: checksum\n    signature: '${artifact}.sig'\n    output: true\n"),
-		"unrelated archive signing":  replace(entry, entry+"  - cmd: 'true'\n    artifacts: archive\n"),
 	}
 	for name, text := range positive {
 		t.Run(name+" control", func(t *testing.T) {
@@ -453,6 +493,47 @@ func TestSkipUpload(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// Proves every config surface that runs caller code after the signing gate
+// is refused (r2: a later before hook or a build pre hook replaced the
+// checksum-signing wrapper after every pre-engine check had passed): a
+// before hook after the gate, build pre and post hooks, universal_binaries
+// and dockers_v2 hooks, binary_signs, docker_signs, publishers, upx, a signs
+// entry over other artifacts, sboms with their own cmd, args or document
+// names, and go build -toolexec. The positives show the template and a
+// universal binary without hooks are accepted.
+func TestCallerHooksRefused(t *testing.T) {
+	template := readTemplate(t, ".goreleaser.yml")
+	const tail = "changelog:\n  use: github\n"
+	appendTop := func(text string) string { return plant(t, template, tail, tail+text) }
+	copyWrapper := "cp ./caller-cosign.sh {{ .Env.RELEASE_STANDARD_SCRIPTS }}/cosign-sign-checksum.sh"
+	cases := map[string]string{
+		"later before hook": plant(t, template, gateHookLine, gateHookLine+"    - '"+copyWrapper+"'\n"),
+		"build pre hook":    plant(t, template, "    goos: [darwin, linux]\n", "    goos: [darwin, linux]\n    hooks:\n      pre: '"+copyWrapper+"'\n"),
+		"build post hook":   plant(t, template, "    goos: [darwin, linux]\n", "    goos: [darwin, linux]\n    hooks:\n      post:\n        - cmd: '"+copyWrapper+"'\n"),
+		"universal hooks":   appendTop("universal_binaries:\n  - ids: [__BINARY__]\n    hooks:\n      pre: '" + copyWrapper + "'\n"),
+		"dockers_v2 hooks":  appendTop("dockers_v2:\n  - images: [example.invalid/x]\n    hooks:\n      pre: '" + copyWrapper + "'\n"),
+		"binary_signs":      appendTop("binary_signs:\n  - cmd: sh\n    args: [-c, '" + copyWrapper + "']\n"),
+		"docker_signs":      appendTop("docker_signs:\n  - cmd: sh\n"),
+		"publishers":        appendTop("publishers:\n  - name: x\n    cmd: sh\n"),
+		"upx":               appendTop("upx:\n  - enabled: true\n    binary: ./caller-upx\n"),
+		"archive signs":     plant(t, template, "    output: true\n", "    output: true\n  - cmd: sh\n    args: [-c, '"+copyWrapper+"']\n    artifacts: archive\n"),
+		"sbom cmd":          plant(t, template, "  - artifacts: archive\n", "  - artifacts: archive\n    cmd: sh\n"),
+		"sbom args":         plant(t, template, "  - artifacts: archive\n", "  - artifacts: archive\n    args: [-c, x]\n"),
+		"sbom documents":    plant(t, template, "  - artifacts: archive\n", "  - artifacts: archive\n    documents: ['{{ .Env.RELEASE_STANDARD_SCRIPTS }}/cosign-sign-checksum.sh']\n"),
+		"toolexec flag":     plant(t, template, "flags: [-trimpath, -buildvcs=false]", "flags: [-trimpath, -buildvcs=false, -toolexec=./caller-tool]"),
+	}
+	for name, text := range cases {
+		t.Run(name, func(t *testing.T) {
+			if found := lintTemplate(t, text); !hasID(found, "caller-hook") {
+				t.Fatalf("want caller-hook, got %v", ids(found))
+			}
+		})
+	}
+	if found := lintTemplate(t, appendTop("universal_binaries:\n  - ids: [__BINARY__]\n")); len(found) != 0 {
+		t.Fatalf("universal binary without hooks: unexpected findings %v", found)
 	}
 }
 

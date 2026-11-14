@@ -96,6 +96,7 @@ var FindingIDs = []string{
 	"standard-workflow-unpinned",
 	"standard-workflow-missing",
 	"goreleaser-unpinned",
+	"caller-hook",
 }
 
 type findings []Finding
@@ -120,6 +121,31 @@ func asList(v any) []any {
 func asString(v any) string {
 	s, _ := v.(string)
 	return strings.TrimSpace(s)
+}
+
+// rawString returns a string value exactly as GoReleaser receives it, with
+// no whitespace trimming.
+func rawString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// rawStringList is stringList without trimming: a scalar string or the
+// string entries of a list, byte for byte.
+func rawStringList(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // stringList accepts a scalar string or a list of strings.
@@ -189,7 +215,7 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		f.add("config-version", "version must be 2")
 	}
 
-	checkEnv("env", doc["env"], &f)
+	checkEnv("env", doc["env"], false, &f)
 	checkBeforeHooks(asList(asMap(doc["before"])["hooks"]), &f)
 
 	builds := asList(doc["builds"])
@@ -206,14 +232,17 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 		if opt.ExpectBinary != "" && asString(m["binary"]) == opt.ExpectBinary {
 			binaryFound = true
 		}
-		checkEnv(where+".env", m["env"], &f)
+		checkEnv(where+".env", m["env"], true, &f)
 		for _, phase := range []string{"pre", "post"} {
 			for j, h := range asList(asMap(m["hooks"])[phase]) {
-				checkEnv(fmt.Sprintf("%s.hooks.%s[%d].env", where, phase, j), asMap(h)["env"], &f)
+				checkEnv(fmt.Sprintf("%s.hooks.%s[%d].env", where, phase, j), asMap(h)["env"], true, &f)
 			}
 		}
+		if hooks, ok := m["hooks"]; ok && hooks != nil {
+			f.add("caller-hook", "%s.hooks must not be set: build hooks run caller code after the signing gate and could replace the shared scripts", where)
+		}
 		checkBuildEnv(where, m["env"], &f)
-		checkBuildFlags(where, stringList(m["flags"]), &f)
+		checkBuildFlags(where, rawStringList(m["flags"]), &f)
 		checkLdflags(where, stringList(m["ldflags"]), &f)
 		if asString(m["tool"]) != toolchainHook {
 			f.add("build-toolchain-hook", "%s: tool must be %s", where, toolchainHook)
@@ -260,6 +289,7 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 	}
 
 	checkSigns(asList(doc["signs"]), &f)
+	checkCallerCode(doc, &f)
 
 	sbomFound := false
 	for _, s := range asList(doc["sboms"]) {
@@ -304,8 +334,9 @@ func envValues(v any) map[string][]string {
 		if !ok {
 			continue
 		}
-		name, value, _ := strings.Cut(strings.TrimSpace(s), "=")
-		name = strings.TrimSpace(name)
+		// Raw bytes: GoReleaser hands the entry to the build unchanged, and
+		// "0 " is not the value that disables cgo.
+		name, value, _ := strings.Cut(s, "=")
 		out[name] = append(out[name], value)
 	}
 	return out
@@ -366,6 +397,9 @@ func checkBuildFlags(where string, flags []string, f *findings) {
 	}
 	if got := counts["ldflags"]; len(got) > 0 {
 		f.add("build-ldflags", "%s: flags must not set -ldflags (%q); use ldflags", where, got)
+	}
+	if got := counts["toolexec"]; len(got) > 0 {
+		f.add("caller-hook", "%s: flags must not set -toolexec (%q): it runs a caller program for every compile step", where, got)
 	}
 }
 
@@ -442,9 +476,11 @@ func isStandardSign(m map[string]any) bool {
 		(!hasSignature || asString(signature) == "${artifact}.sig")
 }
 
-// checkSigns requires exactly one standard signs entry, and refuses any other
-// entry that would also sign the checksum file (artifacts checksum or all),
-// since it could replace or shadow checksums.txt.sig and .pem.
+// checkSigns requires the standard signs entry as the only signs entry. An
+// entry over the checksum file (checksum or all) could replace or shadow
+// checksums.txt.sig and .pem, and an entry over any other artifacts still
+// runs a caller-chosen command after the signing gate, which could replace
+// the shared wrapper before the standard entry runs.
 func checkSigns(signs []any, f *findings) {
 	standard := 0
 	for i, s := range signs {
@@ -452,6 +488,7 @@ func checkSigns(signs []any, f *findings) {
 		switch asString(m["artifacts"]) {
 		case "checksum", "all":
 		default:
+			f.add("caller-hook", "signs[%d] must not be set: only the standard checksum entry may sign, since any signs command runs caller code after the signing gate", i)
 			continue
 		}
 		if isStandardSign(m) {
@@ -465,10 +502,52 @@ func checkSigns(signs []any, f *findings) {
 	}
 }
 
-// checkEnv refuses a protected name in a KEY=VALUE env list. A name that is
-// not a plain identifier (for example a template) or an entry that is not a
+// callerCodeKeys are GoReleaser v2.17.0 config sections that run a
+// caller-chosen command during a release (custom signing of binaries or
+// images, custom publishers, a configurable upx binary). Any entry would run
+// caller code after the signing gate with write access to the shared scripts
+// and dist/, so the standard admits none of them.
+var callerCodeKeys = []string{"binary_signs", "docker_signs", "publishers", "upx"}
+
+// checkCallerCode refuses every config surface that runs caller code after
+// the signing gate, besides before.hooks and builds[].hooks (checked where
+// they are parsed): the sections above, hooks of universal_binaries and
+// dockers_v2, sboms with their own command, args, env or document names, and
+// go build's -toolexec (checked with the flags).
+func checkCallerCode(doc map[string]any, f *findings) {
+	for _, key := range callerCodeKeys {
+		if v, ok := doc[key]; ok && v != nil {
+			f.add("caller-hook", "%s must not be set: it runs a caller-chosen command after the signing gate", key)
+		}
+	}
+	for _, key := range []string{"universal_binaries", "dockers_v2"} {
+		for i, e := range asList(doc[key]) {
+			if hooks, ok := asMap(e)["hooks"]; ok && hooks != nil {
+				f.add("caller-hook", "%s[%d].hooks must not be set: hooks run caller code after the signing gate", key, i)
+			}
+		}
+	}
+	for i, e := range asList(doc["sboms"]) {
+		keys := make([]string, 0)
+		for key := range asMap(e) {
+			if key != "id" && key != "artifacts" {
+				keys = append(keys, key)
+			}
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			f.add("caller-hook", "sboms[%d].%s must not be set: the standard SBOM entry runs the pinned syft with its default command and outputs", i, key)
+		}
+	}
+}
+
+// checkEnv refuses a protected name in a KEY=VALUE env list, and any GO*
+// name except GOFLAGS in a build env (build is true): a caller-set
+// GOTOOLCHAIN, GOPROXY or GOSUMDB could make the go command download and run
+// a toolchain the standard did not choose. A name that is not a plain
+// identifier (a template, or whitespace around it) or an entry that is not a
 // string cannot be checked, so it is refused as well.
-func checkEnv(where string, v any, f *findings) {
+func checkEnv(where string, v any, build bool, f *findings) {
 	if v == nil {
 		return
 	}
@@ -483,8 +562,9 @@ func checkEnv(where string, v any, f *findings) {
 			f.add("protected-env", "%s[%d] is not a KEY=VALUE string", where, i)
 			continue
 		}
-		name, _, _ := strings.Cut(strings.TrimSpace(s), "=")
-		name = strings.TrimSpace(name)
+		// The raw name, untrimmed: " CGO_ENABLED" or "CGO_ENABLED " is a
+		// different variable from CGO_ENABLED, so it is refused, not mapped.
+		name, _, _ := strings.Cut(s, "=")
 		if !envNameRE.MatchString(name) {
 			f.add("protected-env", "%s[%d]: name %q is not a plain identifier", where, i, name)
 			continue
@@ -492,24 +572,33 @@ func checkEnv(where string, v any, f *findings) {
 		if contains(protectedEnv, name) {
 			f.add("protected-env", "%s[%d] sets %s, which only the reusable workflow may set", where, i, name)
 		}
+		if strings.HasPrefix(name, "GO") && !(build && name == "GOFLAGS") {
+			f.add("protected-env", "%s[%d] sets %s; Go toolchain settings (toolchain download, proxy, checksum database, GOROOT, GOENV) are fixed by the standard", where, i, name)
+		}
 	}
 }
 
-// checkBeforeHooks requires the standard signing gate as the first before
-// hook, in plain form: a hook that runs earlier could rewrite the shared
-// scripts or the environment the gate reads, and a gate hook with its own
-// env or dir would no longer be the standard gate. Hook env is checked for
-// protected names in every position.
+// checkBeforeHooks requires the standard signing gate as the first and only
+// before hook, in plain form: a hook that runs earlier could rewrite the
+// shared scripts or the environment the gate reads, a later one could
+// replace the checksum-signing wrapper after the gate passed, and a gate
+// hook with its own env or dir would no longer be the standard gate. Hook env
+// is checked for protected names in every position.
 func checkBeforeHooks(hooks []any, f *findings) {
 	gateAt := -1
 	for i, h := range hooks {
 		cmd := asString(h)
 		if m := asMap(h); m != nil {
 			cmd = asString(m["cmd"])
-			checkEnv(fmt.Sprintf("before.hooks[%d].env", i), m["env"], f)
+			checkEnv(fmt.Sprintf("before.hooks[%d].env", i), m["env"], false, f)
 		}
 		if cmd == signingGate && gateAt < 0 {
 			gateAt = i
+		}
+	}
+	for i := range hooks {
+		if i != gateAt {
+			f.add("caller-hook", "before.hooks[%d] must not be set: the standard gate must be the only before hook, since any other hook runs caller code with write access to the shared scripts", i)
 		}
 	}
 	switch {
@@ -553,15 +642,16 @@ func notarizeWired(m map[string]any) bool {
 // name GoReleaser derives when it is absent. Build ids and notarize ids both
 // default to it, so the symbol compares correctly between them.
 func projectName(doc map[string]any) string {
-	if name := asString(doc["project_name"]); name != "" {
+	if name := rawString(doc["project_name"]); name != "" {
 		return name
 	}
 	return "<project_name>"
 }
 
-// buildID is a build's id, defaulting to the project name as GoReleaser does.
+// buildID is a build's id exactly as written (no trimming), defaulting to
+// the project name as GoReleaser does.
 func buildID(m map[string]any, project string) string {
-	if id := asString(m["id"]); id != "" {
+	if id := rawString(m["id"]); id != "" {
 		return id
 	}
 	return project
@@ -606,9 +696,20 @@ func checkNotarize(doc map[string]any, builds []any, f *findings) {
 	if len(entries) == 0 {
 		f.add("notarize-missing", "notarize.macos needs an entry enabled by %s that signs with MACOS_SIGN_P12/MACOS_SIGN_P12_PASSWORD and notarizes with ASC_ISSUER_ID/ASC_KEY_ID/ASC_KEY_P8 and wait: true", notarizeEnable)
 	}
+	// GoReleaser selects artifacts by the exact id strings, so ids are
+	// compared byte for byte and a whitespace-padded id is refused outright:
+	// " tool" would select nothing while looking like "tool".
+	padded := func(where, id string) {
+		if id != strings.TrimSpace(id) {
+			f.add("notarize-uncovered", "%s %q has leading or trailing whitespace; GoReleaser matches ids exactly", where, id)
+		}
+	}
+	padded("project_name", project)
 	buildIDs := map[string]bool{}
-	for _, b := range builds {
-		buildIDs[buildID(asMap(b), project)] = true
+	for i, b := range builds {
+		id := buildID(asMap(b), project)
+		padded(fmt.Sprintf("builds[%d].id", i), id)
+		buildIDs[id] = true
 	}
 	covered := map[string]bool{}
 	for i, e := range entries {
@@ -617,11 +718,12 @@ func checkNotarize(doc map[string]any, builds []any, f *findings) {
 			f.add("notarize-missing", "notarize.macos[%d] must be enabled by %s, sign with MACOS_SIGN_P12/MACOS_SIGN_P12_PASSWORD, notarize with ASC_ISSUER_ID/ASC_KEY_ID/ASC_KEY_P8 and wait: true", i, notarizeEnable)
 			continue
 		}
-		selected := stringList(m["ids"])
+		selected := rawStringList(m["ids"])
 		if len(selected) == 0 {
 			selected = []string{project}
 		}
 		for _, id := range selected {
+			padded(fmt.Sprintf("notarize.macos[%d].ids", i), id)
 			if !buildIDs[id] {
 				f.add("notarize-uncovered", "notarize.macos[%d].ids names %q, which is not a build id", i, id)
 			}
