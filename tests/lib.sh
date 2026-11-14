@@ -21,7 +21,8 @@ make_scratch() {
 	*) echo "scratch root is not absolute: $SCRATCH" >&2 && exit 2 ;;
 	esac
 	mkdir -p "$SCRATCH/home" "$SCRATCH/config" "$SCRATCH/cache" "$SCRATCH/tmp" "$SCRATCH/work"
-	trap '[ "$KEEP_SCRATCH" = 1 ] || rm -rf "$SCRATCH"' EXIT
+	# Go writes its module cache read-only; make it writable so cleanup succeeds.
+	trap '[ "$KEEP_SCRATCH" = 1 ] || { chmod -R u+w "$SCRATCH" 2>/dev/null; rm -rf "$SCRATCH"; }' EXIT
 	export HOME="$SCRATCH/home" USERPROFILE="$SCRATCH/home"
 	export XDG_CONFIG_HOME="$SCRATCH/config" XDG_CACHE_HOME="$SCRATCH/cache"
 	export TMPDIR="$SCRATCH/tmp" TMP="$SCRATCH/tmp" TEMP="$SCRATCH/tmp"
