@@ -5,9 +5,9 @@ publishing). Nothing was pushed, no GitHub repository was created, no secret
 was read. Inputs: design v1 and inventory in `.temp/TASK-261113-tns6j3/`, the
 launcher at `origin/main` (read-only), curator and a2a-swarm shallow clones.
 
-## Repository name placeholder
+## Repository name
 
-`relux-works/release` is a placeholder (alternative `relux-works/.github`).
+`relux-works/release`, decided by the owner on 2026-11-14 (over `relux-works/.github`).
 Each file names it at most once:
 
 | File | Line | Form |
@@ -120,7 +120,7 @@ runs tests executes `make test`.
    (v0.24.3, released 2026-10-02).
 2. `actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8`
    (v4.2.2, released 2026-08-06).
-3. Repository name (`relux-works/release` vs `.github`), see the table above.
+3. Repository name: decided, `relux-works/release`.
 4. `job.workflow_sha` should be confirmed on the first real run (the guard
    fails closed if it is absent). Drop the actionlint ignore once actionlint
    knows the property.

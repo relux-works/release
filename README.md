@@ -6,8 +6,8 @@ an agent skill and an owner guide. Callers keep only their per-binary
 `.goreleaser.yml` and a short `release.yml`; this repository owns the tool
 versions, the gates and the publishing steps.
 
-The repository name is not decided (`relux-works/release` or
-`relux-works/.github`). Every file names it once; NOTES.md lists each place.
+The repository is `relux-works/release` (owner decision, 2026-11-14). Every file
+names it once; NOTES.md lists each place.
 
 ## Status
 

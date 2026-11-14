@@ -3,8 +3,7 @@
 For Ivan. Everything here involves secret values or org settings, so agents do
 not do it. This guide lists names only; no value appears in any document.
 
-Commands below use one variable for the shared repository (the name is not
-decided yet; `relux-works/.github` is the alternative):
+Commands below use one variable for the shared repository, `relux-works/release`:
 
 ```bash
 STANDARD_REPO=relux-works/release
