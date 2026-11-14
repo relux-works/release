@@ -145,6 +145,18 @@ expect_refusal pgp-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require
 synthetic_tag '-----BEGIN SIGNED MESSAGE-----' '-----END SIGNED MESSAGE-----'
 expect_refusal x509-signature 18 non_ssh_signature --tag v1.2.3
 expect_refusal x509-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
+# Proves r2: the same armor with CRLF line endings, which Git still
+# recognizes as OpenPGP or X.509 signatures, is refused in both modes, as is
+# Git's other OpenPGP marker (PGP MESSAGE). The LF cases above and the
+# unsigned and trusted-SSH opt-out controls below sit next to them.
+synthetic_tag "$(printf -- '-----BEGIN PGP SIGNATURE-----\r')" "$(printf -- '-----END PGP SIGNATURE-----\r')"
+expect_refusal crlf-pgp-signature 18 non_ssh_signature --tag v1.2.3
+expect_refusal crlf-pgp-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
+synthetic_tag "$(printf -- '-----BEGIN SIGNED MESSAGE-----\r')" "$(printf -- '-----END SIGNED MESSAGE-----\r')"
+expect_refusal crlf-x509-signature 18 non_ssh_signature --tag v1.2.3
+expect_refusal crlf-x509-signature-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
+synthetic_tag '-----BEGIN PGP MESSAGE-----' '-----END PGP MESSAGE-----'
+expect_refusal pgp-message-opt-out 18 non_ssh_signature --tag v1.2.3 --require-signed false
 make_tag v1.2.3 annotated
 expect_accept prohibited-format-opt-out-unsigned-control --tag v1.2.3 --require-signed false
 make_tag v1.2.3 signed

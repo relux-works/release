@@ -16,7 +16,8 @@
 #   15 tag_name_mismatch          the tag object's own name differs from the ref
 #   16 signers_file_missing       allowed_signers is not a regular file at the tag commit
 #   17 unsigned_tag               no signature block in the tag object
-#   18 non_ssh_signature          OpenPGP or X.509 signature block; refused in
+#   18 non_ssh_signature          OpenPGP or X.509 signature marker (as Git
+#                                 recognizes it, CRLF included); refused in
 #                                 both modes, also with --require-signed false
 #   19 untrusted_signature        git verify-tag failed against allowed_signers
 #   20 commit_mismatch            the tag commit is not the checked-out HEAD
@@ -166,14 +167,18 @@ verify_tag_signature() {
 
 # 5. Prohibited signature formats are refused in every mode: an OpenPGP or
 # X.509 block is never accepted, not even when unsigned tags are allowed.
+# Markers are recognized as Git does: a line that starts with the marker,
+# whatever follows it (so a CRLF line ending, or trailing bytes, still
+# counts). Git's OpenPGP markers are PGP SIGNATURE and PGP MESSAGE; X.509 is
+# SIGNED MESSAGE.
 body=$(git cat-file tag "$tag_oid")
-if printf '%s\n' "$body" | grep -Eqx -- '-----BEGIN (PGP SIGNATURE|SIGNED MESSAGE)-----'; then
+if printf '%s\n' "$body" | grep -Eq -- '^-----BEGIN (PGP SIGNATURE|PGP MESSAGE|SIGNED MESSAGE)-----'; then
 	refuse 18 non_ssh_signature "$tag carries an OpenPGP or X.509 signature block; only SSH signatures are accepted"
 fi
 
 # 6. SSH signature from a key in the allowlist (OpenPGP and X.509 disabled).
 if [ "$require_signed" = true ]; then
-	printf '%s\n' "$body" | grep -qx -- '-----BEGIN SSH SIGNATURE-----' ||
+	printf '%s\n' "$body" | grep -q -- '^-----BEGIN SSH SIGNATURE-----' ||
 		refuse 17 unsigned_tag "$tag carries no SSH signature"
 	tree_blob "$signers" ||
 		refuse 16 signers_file_missing "$signers is not a regular file at $commit"
