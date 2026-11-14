@@ -1,7 +1,8 @@
 # Relux release standard: GoReleaser config template.
 #
 # Copy to the caller repository root as .goreleaser.yml, replace every
-# __PLACEHOLDER__, and keep everything else. release-standard-lint checks the
+# double-underscore placeholder (the binary name, main package and so on), and
+# keep everything else. release-standard-lint checks the
 # result in the release admission job and again before publishing.
 # RELEASE_STANDARD_SCRIPTS and RELEASE_REQUIRE_SIGNING are set by the shared
 # go-release.yml; for a local snapshot export them in the shell (a checkout of
