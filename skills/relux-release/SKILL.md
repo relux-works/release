@@ -80,7 +80,7 @@ list of the org secrets (ask the owner).
 
    ```bash
    (cd "$STANDARD_CHECKOUT" && go run ./cmd/release-standard-lint \
-     -main ./cmd/<binary> -binary <binary> \
+     -repository relux-works/<repo> -main ./cmd/<binary> -binary <binary> \
      -workflow "$OLDPWD/.github/workflows/release.yml" "$OLDPWD/.goreleaser.yml")
    ```
 
@@ -89,12 +89,19 @@ list of the org secrets (ask the owner).
    only `before` hook, the `signs` entry runs the shared wrapper, notarize
    `ids` select every Darwin build with exactly the build ids (no padding),
    and no `env` list sets `RELEASE_REQUIRE_SIGNING`, `RELEASE_STANDARD_SCRIPTS`,
-   a signing name, `TAP_GITHUB_TOKEN`, `PATH` or a `GO*` name other than
-   `GOFLAGS` in build env (`protected-env`). Env entries and flags are
-   checked byte for byte. Nothing in the config may run your own commands
-   during the release (`caller-hook`): no other before hooks, build hooks,
-   extra `signs`, `binary_signs`, `docker_signs`, `publishers`, `upx`, SBOM
-   commands or `-toolexec`. Put repo-specific checks in `admission_command`.
+   a signing name, `TAP_GITHUB_TOKEN`, `PATH`, a forge token, a `GITHUB_*`,
+   `GORELEASER_*`, `ACTIONS_*`, `COSIGN_*` or `SIGSTORE_*` name, or a `GO*`
+   name other than `GOFLAGS` in build env (`protected-env`). Env entries and
+   flags are checked byte for byte. Nothing in the config may run your own
+   commands during the release (`caller-hook`): no other before hooks, build
+   hooks, extra `signs`, `binary_signs`, `docker_signs`, `publishers`, `upx`,
+   SBOM commands or `-toolexec`. Put repo-specific checks in
+   `admission_command`. Credentials stay where the template puts them:
+   `release.github` names your repository with `owner` and `name` only
+   (`release-target`), the cask goes to `relux-works/homebrew-tap` with the
+   template's token line (`tap-repository`), and templates read the
+   environment only as `.Env.NAME` of a public run fact or a name your root
+   `env` declares (`env-reference`).
 6. Optional inputs in `release.yml` (defaults in brackets):
    `allowed_signers_path` [.github/release-signers], `require_signed_tag` [true],
    `require_on_main` [true], `allow_prerelease` [false], `require_signing` [true],

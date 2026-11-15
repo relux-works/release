@@ -13,11 +13,10 @@ names it once; NOTES.md lists each place.
 
 Not published yet. Hosted CI (`.github/workflows/ci.yml`: static checks,
 Ubuntu and macOS tests, and the real-engine job with pinned GoReleaser
-v2.17.0) runs on every pull request and was green on `66b5f07` (review r2).
-No release has gone through `go-release.yml` yet, so its hosted run, Apple
-notarization and publication are unproven. Changes after `66b5f07` are
-statically checked until CI runs them; NOTES.md records which.
-`linux-repos.yml` is disabled and unimplemented by design.
+v2.17.0) runs on every pull request and push to main, and a change lands only
+with it green. No release has gone through `go-release.yml` yet, so its
+hosted run, Apple signing and notarization, release signing and publication
+are unexercised. `linux-repos.yml` is disabled and unimplemented by design.
 
 ## Parts
 
@@ -44,7 +43,7 @@ statically checked until CI runs them; NOTES.md records which.
 | sh / bash | Gate scripts and tests | `make test` (runs `tests/run-all.sh`) | stdout; scratch under `.temp/test-env.*`, kept only on failure |
 | shellcheck | Static script checks | `make check` | stdout |
 | actionlint | Workflow checks (`.github/actionlint.yaml` ignores one known-new context) | `make check` | stdout |
-| Go | Build and vet the lint | `make check`; run: `go run ./cmd/release-standard-lint [-main PKG] [-binary NAME] [-workflow FILE] .goreleaser.yml` | stdout, exit 0/1/2 |
+| Go | Build and vet the lint | `make check`; run: `go run ./cmd/release-standard-lint -repository OWNER/NAME [-main PKG] [-binary NAME] [-workflow FILE] .goreleaser.yml` | stdout, exit 0/1/2 |
 | git, ssh-keygen | Test fixtures | used by `tests/tag-gate-test.sh` | scratch only |
 | GoReleaser v2.17.0 | Real-engine controls | `REQUIRE_ENGINE=1 GORELEASER=/path/to/goreleaser bash tests/engine-test.sh` (CI job `engine`; SKIP without a binary) | scratch only |
 | cosign, gh | Release verification | `scripts/verify-release.sh --dir DIR --repo OWNER/NAME --tag vX.Y.Z [--attest]` | stdout |
@@ -52,5 +51,5 @@ statically checked until CI runs them; NOTES.md records which.
 ## Using it
 
 Adopting, tagging and verifying: `skills/relux-release/SKILL.md`.
-Secrets and org setup: `docs/OWNER-GUIDE.md`. Design background: the release
-standard design v1 (STORY-261113-i1yc0p).
+Secrets and org setup: `docs/OWNER-GUIDE.md`. Design decisions, validation
+scope and open items: `NOTES.md`.
