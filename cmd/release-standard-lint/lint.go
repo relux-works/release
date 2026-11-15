@@ -27,7 +27,9 @@ const (
 // reusable workflow sets from its own inputs and secrets. GoReleaser applies
 // a config's root env over the process env before it expands any hook, so
 // one such entry would redirect or disable the in-GoReleaser gate. PATH is
-// protected too: it decides which sh and cosign the shared scripts run.
+// protected too: it decides which sh and cosign the shared scripts run. The
+// other forge tokens are protected so a config cannot swap the credential
+// GoReleaser picks for the release.
 var protectedEnv = []string{
 	"RELEASE_REQUIRE_SIGNING",
 	"RELEASE_STANDARD_SCRIPTS",
@@ -38,6 +40,27 @@ var protectedEnv = []string{
 	"ASC_KEY_P8",
 	"TAP_GITHUB_TOKEN",
 	"PATH",
+	"GITLAB_TOKEN",
+	"GITEA_TOKEN",
+}
+
+// protectedEnvPrefixes extend protectedEnv to whole families: GITHUB_* (the
+// release token and the run's identity), GORELEASER_* (token choice and the
+// current tag), ACTIONS_* (the runner's OIDC request token and URL that
+// keyless cosign uses), and COSIGN_* / SIGSTORE_* (where cosign sends that
+// identity and what it trusts).
+var protectedEnvPrefixes = []string{"GITHUB_", "GORELEASER_", "ACTIONS_", "COSIGN_", "SIGSTORE_"}
+
+func isProtectedEnv(name string) bool {
+	if contains(protectedEnv, name) {
+		return true
+	}
+	for _, p := range protectedEnvPrefixes {
+		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -60,6 +83,8 @@ type Options struct {
 	// ExpectMain and ExpectBinary, when set, must match one builds[] entry.
 	ExpectMain   string
 	ExpectBinary string
+	// ExpectRepository, when set, is the OWNER/NAME release.github must name.
+	ExpectRepository string
 }
 
 // FindingIDs lists every finding ID the lint can report. add refuses any
@@ -97,6 +122,9 @@ var FindingIDs = []string{
 	"standard-workflow-missing",
 	"goreleaser-unpinned",
 	"caller-hook",
+	"release-target",
+	"tap-repository",
+	"env-reference",
 }
 
 type findings []Finding
@@ -322,6 +350,9 @@ func LintGoReleaser(data []byte, opt Options) ([]Finding, error) {
 	if asString(asMap(doc["release"])["prerelease"]) != "auto" {
 		f.add("release-prerelease", "release.prerelease must be auto")
 	}
+	checkReleaseTarget(doc, opt, &f)
+	checkTapRepository(doc, &f)
+	checkTemplateEnv(doc, &f)
 	return f, nil
 }
 
@@ -569,7 +600,7 @@ func checkEnv(where string, v any, build bool, f *findings) {
 			f.add("protected-env", "%s[%d]: name %q is not a plain identifier", where, i, name)
 			continue
 		}
-		if contains(protectedEnv, name) {
+		if isProtectedEnv(name) {
 			f.add("protected-env", "%s[%d] sets %s, which only the reusable workflow may set", where, i, name)
 		}
 		if strings.HasPrefix(name, "GO") && !(build && name == "GOFLAGS") {

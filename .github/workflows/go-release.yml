@@ -190,8 +190,10 @@ jobs:
           GOTOOLCHAIN: auto
           EXPECT_MAIN: ${{ inputs.main_package }}
           EXPECT_BINARY: ${{ inputs.binary }}
+          EXPECT_REPOSITORY: ${{ github.repository }}
         run: |
           go run ./cmd/release-standard-lint \
+            -repository "$EXPECT_REPOSITORY" \
             -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
             "$GITHUB_WORKSPACE/source/.goreleaser.yml"
 
@@ -295,8 +297,10 @@ jobs:
           GOTOOLCHAIN: auto
           EXPECT_MAIN: ${{ inputs.main_package }}
           EXPECT_BINARY: ${{ inputs.binary }}
+          EXPECT_REPOSITORY: ${{ github.repository }}
         run: |
           go run ./cmd/release-standard-lint \
+            -repository "$EXPECT_REPOSITORY" \
             -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
             "$GITHUB_WORKSPACE/source/.goreleaser.yml"
 

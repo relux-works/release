@@ -172,6 +172,16 @@ lint_narrowing lint-narrow-build-hooks 'f.add("caller-hook", "%s.hooks must not 
 lint_narrowing lint-narrow-trimmed-ids 'selected := rawStringList(m["ids"])' 'selected := stringList(m["ids"])' TestNotarizeCoverage
 lint_narrowing lint-narrow-trimmed-env 'name, value, _ := strings.Cut(s, "=")' 'name, value, _ := strings.Cut(strings.TrimSpace(s), "=")' TestEffectiveBuildSettings
 
+# Proves the r3 credential rules are each load-bearing: the suite fails when
+# the release target is no longer compared with the calling repository, when
+# the cask token is no longer checked, when the env-reference rule admits any
+# name, and when a bare . is no longer refused.
+CRED=cmd/release-standard-lint/credentials.go
+module_mutant cred-narrow-release-repo "$CRED" 'if opt.ExpectRepository != "" && !strings.EqualFold(' 'if false && !strings.EqualFold(' TestReleaseTargetRefused
+module_mutant cred-narrow-tap-token "$CRED" 'if rawString(repo["token"]) != tapToken {' 'if false {' TestTapRepository
+module_mutant cred-narrow-env-allow "$CRED" 'return allowed[name] || name == extra }' 'return allowed[name] || name == extra || name != "" }' TestTemplateEnvRefused
+module_mutant cred-narrow-bare-dot "$CRED" 'add("a bare . exposes the whole template context, including Env")' '_ = 0' TestTemplateEnvRefused
+
 # Proves the workflow contract kills a disabled or emptied authoritative gate
 # (r2: if: false on the presence gate survived every suite): the review's
 # if: false, continue-on-error on the post-GoReleaser tree check, and a

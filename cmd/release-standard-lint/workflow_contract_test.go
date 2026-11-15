@@ -37,6 +37,7 @@ var gateSpecs = []gateSpec{
   exit 1
 }`},
 	{"admission", stepLint, "release-standard", `go run ./cmd/release-standard-lint \
+  -repository "$EXPECT_REPOSITORY" \
   -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
   "$GITHUB_WORKSPACE/source/.goreleaser.yml"`},
 	{"publish", stepCommit, "", `[ "$(git -C "$GITHUB_WORKSPACE/release-standard" rev-parse HEAD)" = "$WORKFLOW_SHA" ] || {
@@ -44,6 +45,7 @@ var gateSpecs = []gateSpec{
   exit 1
 }`},
 	{"publish", stepLint, "release-standard", `go run ./cmd/release-standard-lint \
+  -repository "$EXPECT_REPOSITORY" \
   -main "$EXPECT_MAIN" -binary "$EXPECT_BINARY" \
   "$GITHUB_WORKSPACE/source/.goreleaser.yml"`},
 	{"publish", stepGate, "", `"$GITHUB_WORKSPACE/release-standard/scripts/signing-gate.sh"`},
@@ -479,7 +481,8 @@ func TestSavedGateStepsExecute(t *testing.T) {
 		"__HOMEPAGE__", "https://example.invalid/fixture", "__MAINTAINER__", "Fixture <fixture@example.invalid>").
 		Replace(readTemplate(t, ".goreleaser.yml"))
 	filled = placeholderRE.ReplaceAllString(filled, "fixture")
-	lintValues := map[string]string{"inputs.main_package": "./cmd/fixture", "inputs.binary": "fixture"}
+	lintValues := map[string]string{"inputs.main_package": "./cmd/fixture", "inputs.binary": "fixture", "github.repository": "relux-works/fixture"}
+	otherRepo := map[string]string{"inputs.main_package": "./cmd/fixture", "inputs.binary": "fixture", "github.repository": "relux-works/homebrew-tap"}
 	config := filepath.Join(lintWS, "source", ".goreleaser.yml")
 	for _, job := range []string{"admission", "publish"} {
 		lint := step(job, stepLint)
@@ -493,5 +496,12 @@ func TestSavedGateStepsExecute(t *testing.T) {
 		}
 		rc, out = runSavedStep(t, lint, lintWS, lintValues)
 		expect(job+" lint, drifted config", rc, out, 1, ": release-prerelease: ")
+		// The step passes the calling repository: the same filled config
+		// run for another repository is refused on its release target.
+		if err := os.WriteFile(config, []byte(filled), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rc, out = runSavedStep(t, lint, lintWS, otherRepo)
+		expect(job+" lint, other calling repository", rc, out, 1, ": release-target: ")
 	}
 }

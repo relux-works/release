@@ -175,8 +175,12 @@ func TestProtectedEnv(t *testing.T) {
 			return plant(t, template, "    goos: [darwin, linux]\n", "    goos: [darwin, linux]\n    hooks:\n      pre:\n        - cmd: 'true'\n          env: ['"+entry+"']\n")
 		},
 	}
+	// One member of each protected family (protectedEnvPrefixes): the
+	// release token, GoReleaser's tag and token overrides, the runner's
+	// OIDC request URL, and cosign and Sigstore settings.
+	families := []string{"GITHUB_TOKEN", "GORELEASER_CURRENT_TAG", "GORELEASER_FORCE_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "COSIGN_YES", "SIGSTORE_ID_TOKEN"}
 	for place, build := range places {
-		for _, name := range protectedEnv {
+		for _, name := range append(append([]string{}, protectedEnv...), families...) {
 			t.Run(place+"/"+name, func(t *testing.T) {
 				if found := lintTemplate(t, build(name+"=dummy")); !hasID(found, "protected-env") {
 					t.Fatalf("want protected-env, got %v", ids(found))

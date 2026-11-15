@@ -150,7 +150,7 @@ workflow_gate() {
 
 expect_lint() {
 	local label=$1 want=$2 config=$3 rc=0
-	"$LINT" -main . -binary relux-fixture "$config" >"$SCRATCH/lint.out" 2>&1 || rc=$?
+	"$LINT" -repository relux-works/relux-fixture -main . -binary relux-fixture "$config" >"$SCRATCH/lint.out" 2>&1 || rc=$?
 	if { [ -z "$want" ] && [ "$rc" -eq 0 ]; } || { [ -n "$want" ] && [ "$rc" -eq 1 ] && grep -Fq -- ": $want: " "$SCRATCH/lint.out"; }; then
 		pass "$label"
 	else

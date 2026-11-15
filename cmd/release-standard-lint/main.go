@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 )
+
+var repositoryRE = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -23,8 +26,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	expectMain := fs.String("main", "", "require a build with this main package")
 	expectBinary := fs.String("binary", "", "require a build with this binary name")
 	workflow := fs.String("workflow", "", "also lint this caller release workflow")
+	repository := fs.String("repository", "", "OWNER/NAME the release must target (required unless -allow-placeholders)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: release-standard-lint [-main PKG] [-binary NAME] [-workflow FILE] [-allow-placeholders] .goreleaser.yml")
+		fmt.Fprintln(stderr, "usage: release-standard-lint -repository OWNER/NAME [-main PKG] [-binary NAME] [-workflow FILE] .goreleaser.yml")
+		fmt.Fprintln(stderr, "       release-standard-lint -allow-placeholders [-workflow FILE] template/.goreleaser.yml")
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
@@ -34,7 +39,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return 2
 	}
-	opt := Options{AllowPlaceholders: *allow, ExpectMain: *expectMain, ExpectBinary: *expectBinary}
+	// A caller config is always checked against the repository it releases
+	// from; only the template itself (placeholders allowed) has none.
+	if *repository == "" && !*allow {
+		fmt.Fprintln(stderr, "release-standard-lint: -repository OWNER/NAME is required")
+		return 2
+	}
+	if *repository != "" && !repositoryRE.MatchString(*repository) {
+		fmt.Fprintf(stderr, "release-standard-lint: -repository %q is not OWNER/NAME\n", *repository)
+		return 2
+	}
+	opt := Options{AllowPlaceholders: *allow, ExpectMain: *expectMain, ExpectBinary: *expectBinary, ExpectRepository: *repository}
 
 	type target struct {
 		path string

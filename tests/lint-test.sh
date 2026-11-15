@@ -33,7 +33,7 @@ expect_lint() {
 	shift 3
 	local rc=0
 	"$LINT" "$@" >"$SCRATCH/lint.out" 2>"$SCRATCH/lint.err" || rc=$?
-	if [ "$rc" -eq "$want_rc" ] && { [ -z "$want" ] || grep -Fq -- "$want" "$SCRATCH/lint.out"; }; then
+	if [ "$rc" -eq "$want_rc" ] && { [ -z "$want" ] || grep -Fq -- "$want" "$SCRATCH/lint.out" "$SCRATCH/lint.err"; }; then
 		pass "$label"
 	else
 		fail "$label" "want rc=$want_rc '$want', got rc=$rc: $(cat "$SCRATCH/lint.out" "$SCRATCH/lint.err")"
@@ -58,7 +58,7 @@ WORKFLOW="$REPO_ROOT/template/release.yml"
 # Proves the CLI positive: the template and caller workflow pass when
 # placeholders are allowed, and an unfilled copy fails on placeholders.
 expect_lint template-ok 0 'release-standard-lint: ok' -allow-placeholders -workflow "$WORKFLOW" "$TEMPLATE"
-expect_lint template-placeholders 1 ': placeholder-left: ' "$TEMPLATE"
+expect_lint template-placeholders 1 ': placeholder-left: ' -repository relux-works/__REPOSITORY_NAME__ "$TEMPLATE"
 
 # Proves drift is reported by finding ID with exit 1, paired with the
 # template positive above.
@@ -77,8 +77,12 @@ fi
 expect_lint expect-main-mismatch 1 ': build-main-mismatch: ' -allow-placeholders -main ./cmd/other "$TEMPLATE"
 expect_lint expect-main-match 0 'release-standard-lint: ok' -allow-placeholders -main __MAIN_PACKAGE__ "$TEMPLATE"
 
-# Proves usage and read errors exit 2 instead of passing.
-expect_lint missing-file 2 '' "$SCRATCH/absent.yml"
+# Proves usage and read errors exit 2 instead of passing: a missing file, no
+# arguments, a caller config without -repository (only the template, with
+# placeholders allowed, may omit it) and a -repository that is not OWNER/NAME.
+expect_lint missing-file 2 '' -repository relux-works/x "$SCRATCH/absent.yml"
 expect_lint no-arguments 2 ''
+expect_lint no-repository 2 'release-standard-lint: -repository OWNER/NAME is required' "$TEMPLATE"
+expect_lint bad-repository 2 'is not OWNER/NAME' -repository 'relux-works' "$TEMPLATE"
 
 finish lint-test
